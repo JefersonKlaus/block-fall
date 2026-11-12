@@ -21,6 +21,12 @@ python -m venv .venv
 
 Install the project dependencies:
 
+```
+
+Install development and test dependencies:
+
+```powershell
+python -m pip install -r requirements-dev.txt
 ```powershell
 pip install --upgrade pip
 pip install -r requirements.txt
@@ -69,6 +75,19 @@ tetromino shapes: I, O, T, S, Z, J, and L. The player can rotate a piece, move a
 the current piece. The drop column is chosen randomly.
 
 ## Development checks
+
+Run the complete test suite:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Measure test coverage:
+
+```powershell
+python -m coverage run -m unittest discover -s tests
+python -m coverage report -m
+```
 
 Compile all Python modules to detect syntax errors:
 
