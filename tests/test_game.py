@@ -18,6 +18,7 @@ from game import (
     SQUARE_COLORS,
     BlockFallEngine,
     Frame,
+    find_lines,
     line_points,
 )
 
@@ -73,12 +74,12 @@ class RulesTests(unittest.TestCase):
 
 
 class BoardTests(unittest.TestCase):
-    def test_default_board_is_the_beginner_12_by_12(self):
+    def test_default_board_is_the_middle_5_by_5(self):
         engine = BlockFallEngine(start_squares=0)
-        self.assertEqual(DIFFICULTIES[DEFAULT_DIFFICULTY][0], "BEGINNER")
-        self.assertEqual((GRID_ROWS, GRID_COLS), (12, 12))
-        self.assertEqual((engine.rows, engine.cols), (12, 12))
-        self.assertEqual(engine.grid, [[0] * 12 for _ in range(12)])
+        self.assertEqual(DIFFICULTIES[DEFAULT_DIFFICULTY][0], "MIDDLE")
+        self.assertEqual((GRID_ROWS, GRID_COLS), (5, 5))
+        self.assertEqual((engine.rows, engine.cols), (5, 5))
+        self.assertEqual(engine.grid, [[0] * 5 for _ in range(5)])
         self.assertEqual((engine.score, engine.high_score, engine.game_over), (0, 0, False))
 
     def test_custom_size(self):
@@ -148,6 +149,30 @@ class SlideTests(unittest.TestCase):
         engine.game_over = True
         self.assertFalse(engine.move_board("right"))
         self.assertEqual(show(engine), ["B.."])
+
+
+class FindLinesTests(unittest.TestCase):
+    """Finding lines only looks at the board: nothing is removed or scored."""
+
+    def grid(self, *rows):
+        return [[LETTER.get(ch, 0) for ch in row] for row in rows]
+
+    def test_finds_rows_and_columns_of_three_or_more(self):
+        lines = find_lines(self.grid("BBB.", "G...", "G...", "GR.."))
+        self.assertEqual(sorted(map(sorted, lines)),
+                         [[(0, 0), (1, 0), (2, 0)], [(0, 1), (0, 2), (0, 3)]])
+
+    def test_each_line_is_reported_whole(self):
+        (line,) = find_lines(self.grid("RRRRR"))
+        self.assertEqual(len(line), 5)
+
+    def test_empty_cells_and_pairs_are_not_lines(self):
+        self.assertEqual(find_lines(self.grid("...", "BB.", "GRG")), [])
+
+    def test_the_board_is_left_untouched(self):
+        grid = self.grid("BBB")
+        find_lines(grid)
+        self.assertEqual(grid, self.grid("BBB"))
 
 
 class MatchTests(unittest.TestCase):

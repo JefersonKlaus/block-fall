@@ -43,9 +43,38 @@ DIRECTION_STEPS = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 
 Squares = dict[int, tuple[int, int, int]]
 
 
+Cell = tuple[int, int]  # (column, row)
+
+
 def line_points(length: int) -> int:
     """Points for a line: 1 per square for the first 3, then 2 per square."""
     return MATCH_LENGTH + 2 * (length - MATCH_LENGTH)
+
+
+def lines_from(rows: int, cols: int, side: str) -> list[list[Cell]]:
+    """Rows or columns of the board, each listed starting from `side`.
+
+    "left": every row from left to right; "up": every column from top to
+    bottom; and so on. Squares sliding toward `side` pack at the front.
+    """
+    columns, row_range = range(cols), range(rows)
+    if side in ("left", "right"):
+        ordered = columns if side == "left" else columns[::-1]
+        return [[(column, row) for column in ordered] for row in row_range]
+    ordered = row_range if side == "up" else row_range[::-1]
+    return [[(column, row) for row in ordered] for column in columns]
+
+
+def find_lines(grid: list[list[int]]) -> list[list[Cell]]:
+    """Every horizontal or vertical run of MATCH_LENGTH+ same-colored squares."""
+    rows, cols = len(grid), len(grid[0])
+    found = []
+    for line in lines_from(rows, cols, "left") + lines_from(rows, cols, "up"):
+        for color, run in groupby(line, key=lambda cell: grid[cell[1]][cell[0]]):
+            run = list(run)
+            if color and len(run) >= MATCH_LENGTH:
+                found.append(run)
+    return found
 
 
 @dataclass(frozen=True)
@@ -176,21 +205,15 @@ class BlockFallEngine:
         and a vertical line counts in both but is removed once. Returns the
         number of squares removed.
         """
-        matched: set[tuple[int, int]] = set()
-        points = 0
-        for line in self._lines_from("left") + self._lines_from("up"):
-            for color, run in groupby(line, key=lambda cell: self.grid[cell[1]][cell[0]]):
-                run = list(run)
-                if color and len(run) >= MATCH_LENGTH:
-                    matched.update(run)
-                    points += line_points(len(run))
+        lines = find_lines(self.grid)
+        matched = {cell for line in lines for cell in line}
         if matched:
             gold = frozenset(self.square_ids[row][column] for column, row in matched)
             self.frames.append(Frame("match", self.squares(), gold))
         for column, row in matched:
             self.grid[row][column] = 0
             self.square_ids[row][column] = 0
-        self.score += points
+        self.score += sum(line_points(len(line)) for line in lines)
         self.high_score = max(self.high_score, self.score)
         return len(matched)
 
@@ -235,20 +258,10 @@ class BlockFallEngine:
     def _take(self, column: int, row: int) -> tuple[int, int]:
         return self.grid[row][column], self.square_ids[row][column]
 
-    def _lines_from(self, side: str) -> list[list[tuple[int, int]]]:
-        """Rows or columns, each listed starting from `side`.
+    def _lines_from(self, side: str) -> list[list[Cell]]:
+        return lines_from(self.rows, self.cols, side)
 
-        "left": every row from left to right; "up": every column from top to
-        bottom; and so on. Squares sliding toward `side` pack at the front.
-        """
-        columns, rows = range(self.cols), range(self.rows)
-        if side in ("left", "right"):
-            ordered = columns if side == "left" else columns[::-1]
-            return [[(column, row) for column in ordered] for row in rows]
-        ordered = rows if side == "up" else rows[::-1]
-        return [[(column, row) for row in ordered] for column in columns]
-
-    def _edges_from(self, side: str) -> list[list[tuple[int, int]]]:
+    def _edges_from(self, side: str) -> list[list[Cell]]:
         """Columns (or rows) starting at the `side` edge and going inward."""
         lines = self._lines_from("up" if side in ("left", "right") else "left")
         return lines if side in ("left", "up") else lines[::-1]

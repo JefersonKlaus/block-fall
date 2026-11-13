@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import ui
 
-MAIN_PATH = Path(__file__).resolve().parent.parent / "main.py"
+MAIN_PATH = Path(__file__).resolve().parent.parent / "src" / "main.py"
 
 
 class EntryPointTests(unittest.TestCase):

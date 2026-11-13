@@ -3,21 +3,21 @@
 
 
 ## Task
-This is a mobile game, this is a 'one finger game', so the player uses only one finger to play it. The ideia is very simple, appears one block in the grid and you need send ALL block to rigth, dow, up or left to close a line, if you do it, you make a point.
-The first goal, is fix a bug in the controls, for some reason the UP and DOWN action is not working well.
-The second goal is change one rule, at this version you press when you want to block (add new one) the new rule will be, you move the blocks, you get a new block.
-The last goal, is improve tests, the current version has only teste to the basic functions
+This is a mobile game, a 'one finger game', so the player uses one finger to play it moving all blocks to right, down, up or left to count points.
+The first goal is to fix a UI bug, the top bar in the mobile device , is hiding one part of the game.
+The second goal is, the app file size (apk) is too large.
+The last goal is change unittest to pytest, and configure the projet to follow the standards (my starndars).
 
 
 ## How to judge completion
-Run the app, and play the entire game, you can run it in the computer or build it and play in your mobile device. So the game ends when you do not gave more space to insert a block in the grid.
-After play the game, run the pytest and see the results
+Run the app, and play the entire game, you can run it in the computer or build it (apk) and play in your mobile device. So the game ends when you do not gave more space to insert a block in the grid.
+After play the game, run the pytest and see the results (python -m unittest -v)
 
 
 ## Notes
-This is a mobile game, this is a 'one finger game', so the player uses only one finger to play it. The ideia is very simple, appears one block in the grid and you need send ALL block to rigth, dow, up or left to close a line, if you do it, you make a point.
+This is a mobile game, this is a 'one finger game', so the player uses only one finger to play it. The ideia is very simple, appears one block in the grid and you need send ALL block to rigth, down, up or left to align 3 blocks (same color).
 This is an open source project, where you can find in this URL https://github.com/JefersonKlaus/block-fall
-This version has only 47 tests and some bugs, in the controls and in the UI, the ideia of this task is solve the bugs and add more tests.
+This version has 234 tests and some bugs, in the controls and in the UI, the ideia of this task is solve the bugs and add more tests.
 
 
 ## How to test

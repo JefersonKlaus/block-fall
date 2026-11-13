@@ -1,0 +1,25 @@
+[project]
+name = "block-fall"
+version = "1.0.0"
+description = "Slide colored squares and line up 3 or more of the same color."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["flet==1.0.5"]
+
+[tool.flet]
+# Name shown on the phone and in the stores.
+product = "Block Fall"
+# Fill behind the transparent icon where a store needs a solid icon (iOS).
+icon_background = "#FFF8F1"
+# Set these to your own organization before publishing (they form the
+# Android package name / iOS bundle id, e.g. com.yourcompany.blockfall).
+# org = "com.yourcompany"
+# bundle_id = "com.yourcompany.blockfall"
+
+[tool.flet.app]
+# The usual Flet layout: the app and its assets/ folder live in src/.
+path = "src"
+module = "main"
+
+[tool.flet.android]
+adaptive_icon_background = "#FFF8F1"

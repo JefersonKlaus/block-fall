@@ -1,6 +1,5 @@
 import asyncio
 import colorsys
-import dataclasses
 import itertools
 import math
 from types import SimpleNamespace
@@ -31,10 +30,8 @@ from config import (
     GRID_ROWS,
     PEACH,
     POP_START_SECONDS,
-    PURPLE,
     RED,
     START_FILL,
-    SWIPE_MIN_DISTANCE,
     TILE_COLORS,
     TILE_RADIUS,
     UNLOCK_FLASH_SECONDS,
@@ -43,14 +40,16 @@ from config import (
     WINDOW_WIDTH,
 )
 from game import SQUARE_COLORS, BlockFallEngine, Frame
-from ui import BlockFallView, create_logo, create_tile, swipe_direction
+from ui import BlockFallView
+from tests.helpers import MockPage, iter_controls, lab, lightness
+from ui.widgets import create_tile
 
 SWIPES = {"left": (-80, 5), "right": (80, -5), "up": (4, -80), "down": (-4, 80)}
 
 
 def step(view):
     """Distance between two neighbouring squares on the board."""
-    return view.cell + CELL_SPACING
+    return view.board.cell + CELL_SPACING
 
 
 def last_choice(values):
@@ -91,39 +90,13 @@ def next_position_last(color):
     )
 
 
-def lab(hex_color):
-    """CIELAB coordinates: distances match how different colors look."""
-    r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
-    lin = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
-    r, g, b = map(lin, (r, g, b))
-    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
-    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
-    f = lambda t: t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116  # noqa: E731
-    return (116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z)))
-
-
-def lightness(hex_color):
-    return colorsys.rgb_to_hls(*(int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)))[1]
-
-
 def board_colors(view):
     """What the player sees: the color shown at each (row, column)."""
     colors = [[COLOR_EMPTY] * view.game.cols for _ in range(view.game.rows)]
-    for tile in view.tiles.values():
-        assert tile in view.board.controls
+    for tile in view.board.tiles.values():
+        assert tile in view.board.stack.controls
         colors[round(tile.top / step(view))][round(tile.left / step(view))] = tile.bgcolor
     return colors
-
-
-def iter_controls(control):
-    """Yield a control and all of its descendants."""
-    yield control
-    content = getattr(control, "content", None)
-    if content is not None:
-        yield from iter_controls(content)
-    for child in getattr(control, "controls", None) or []:
-        yield from iter_controls(child)
 
 
 class NoDelay:
@@ -131,51 +104,9 @@ class NoDelay:
 
     def setUp(self):
         super().setUp()
-        patcher = patch("ui.asyncio.sleep", new_callable=AsyncMock)
+        patcher = patch("ui.animation.asyncio.sleep", new_callable=AsyncMock)
         self.sleep = patcher.start()
         self.addCleanup(patcher.stop)
-
-
-REAL_PAGE_ATTRIBUTES = {f.name for f in dataclasses.fields(ft.Page)} | set(dir(ft.Page))
-
-
-class MockPage:
-    """Stand-in for ft.Page that only accepts attributes ft.Page really has.
-
-    A permissive mock hid a real bug: `page.window_width` (Flet 0.x) was
-    silently ignored by Flet 1.x, so the window was never sized.
-    """
-
-    _MOCK_ONLY = {"updated", "tasks", "orientations", "dialog"}
-
-    def __init__(self, platform=ft.PagePlatform.WINDOWS, width=400):
-        self.window = ft.Window()
-        self.platform = platform
-        self.width = width  # the space the app really gets (not the window size)
-        self.tasks = []
-
-    def __setattr__(self, name, value):
-        if name not in self._MOCK_ONLY and name not in REAL_PAGE_ATTRIBUTES:
-            raise AttributeError(f"ft.Page has no attribute {name!r}")
-        object.__setattr__(self, name, value)
-
-    def add(self, control):
-        self.controls = [control]
-
-    def update(self):
-        self.updated = True
-
-    def run_task(self, handler, *args):
-        self.tasks.append((handler, args))
-
-    def show_dialog(self, dialog):
-        self.dialog = dialog
-
-    def pop_dialog(self):
-        self.dialog = None
-
-    async def set_allowed_device_orientations(self, orientations):
-        self.orientations = orientations
 
 
 class MockPageTests(unittest.TestCase):
@@ -196,8 +127,9 @@ class ViewCase(NoDelay, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.page = MockPage()
-        # An empty board, so each test sets up exactly the squares it needs.
-        self.view = BlockFallView(self.page, BlockFallEngine(start_squares=0))
+        # An empty 10x10 board (not tied to any level's size), so each test
+        # sets up exactly the squares it needs.
+        self.view = BlockFallView(self.page, BlockFallEngine(rows=10, cols=10, start_squares=0))
         self.game = self.view.game
         # The constructor already calls refresh(); reset the flag so each
         # test proves its own action triggered a page update.
@@ -210,7 +142,7 @@ class ViewCase(NoDelay, unittest.TestCase):
     def swipe(self, direction_or_dx, dy=None, steps=4):
         """Drag a finger across the game area (like a real touch)."""
         dx, dy = SWIPES[direction_or_dx] if dy is None else (direction_or_dx, dy)
-        area = self.view.swipe_area
+        area = self.view.swipe_area.control
         area.on_pan_start(None)
         for _ in range(steps):
             area.on_pan_update(SimpleNamespace(local_delta=ft.Offset(dx / steps, dy / steps)))
@@ -227,19 +159,19 @@ class UITests(ViewCase):
 
     def test_move_adds_exactly_one_square(self):
         move(self.view, "left")
-        self.assertEqual(len(self.view.tiles), 1)
+        self.assertEqual(len(self.view.board.tiles), 1)
         self.assertTrue(self.page.updated)
 
     def test_every_move_adds_one_square(self):
         with next_colors(BLUE, GREEN, RED, BLUE):  # never 3 alike: no match
             for presses, direction in enumerate(["left", "right", "up", "down"], start=1):
                 move(self.view, direction)
-                self.assertEqual(len(self.view.tiles), presses)
+                self.assertEqual(len(self.view.board.tiles), presses)
 
     def test_game_over_refresh_shows_game_over_message(self):
         self.game.game_over = True
         self.view.refresh()
-        self.assertEqual(self.view.status_display.value, "GAME OVER! Tap Restart.")
+        self.assertEqual(self.view.status_display.value, "GAME OVER")
 
     def test_normal_refresh_shows_move_message(self):
         self.view.refresh()
@@ -250,37 +182,6 @@ class UITests(ViewCase):
     def test_move_refreshes_page(self):
         move(self.view, "left")
         self.assertTrue(self.page.updated)
-
-
-class TileTests(unittest.TestCase):
-    def test_tile_uses_requested_dimensions(self):
-        tile = create_tile(BLUE, width=20, height=20)
-        self.assertEqual((tile.width, tile.height), (20, 20))
-
-    def test_default_tile_size_is_cell_size(self):
-        tile = create_tile(BLUE)
-        self.assertEqual((tile.width, tile.height), (CELL_SIZE, CELL_SIZE))
-
-    def test_empty_tile_uses_empty_color(self):
-        self.assertEqual(create_tile(0).bgcolor, COLOR_EMPTY)
-
-    def test_every_configured_value_uses_its_color(self):
-        for value, color in TILE_COLORS.items():
-            self.assertEqual(create_tile(value).bgcolor, color)
-
-    def test_tiles_use_five_pastel_colors(self):
-        self.assertEqual(
-            TILE_COLORS,
-            {0: COLOR_EMPTY, BLUE: "#8EC5FF", GREEN: "#9EE5B8", RED: "#FF9AA2",
-             PEACH: "#FFC89A", PURPLE: "#C9A7F5"},
-        )
-
-    def test_unknown_value_falls_back_to_board_background(self):
-        self.assertEqual(create_tile(256).bgcolor, COLOR_BOARD_BG)
-
-    def test_gold_tile(self):
-        self.assertEqual(create_tile(RED, gold=True).bgcolor, COLOR_GOLD)
-        self.assertNotIn(COLOR_GOLD, TILE_COLORS.values())
 
 
 class NoBorderTests(ViewCase):
@@ -294,14 +195,14 @@ class NoBorderTests(ViewCase):
     def test_board_squares_have_no_border(self):
         place(self.game, (0, 8, BLUE), (1, 8, GREEN), (0, 9, RED))
         self.view.refresh()
-        self.assertTrue(all(t.border is None for t in self.view.tiles.values()))
-        self.assertTrue(all(s.border is None for s in self.view.slots))
+        self.assertTrue(all(t.border is None for t in self.view.board.tiles.values()))
+        self.assertTrue(all(s.border is None for s in self.view.board.slots))
 
     def test_squares_are_separated_by_a_small_gap(self):
         self.assertEqual((CELL_SIZE, CELL_SPACING), (30, 4))
         place(self.game, (0, 9, BLUE), (1, 9, GREEN), (2, 9, RED), (3, 9, BLUE))
         self.view.refresh()
-        lefts = sorted(t.left for t in self.view.tiles.values())
+        lefts = sorted(t.left for t in self.view.board.tiles.values())
         self.assertEqual(lefts, [0, step(self.view), 2 * step(self.view), 3 * step(self.view)])
 
     def test_ui_has_no_outline_helpers_left(self):
@@ -328,26 +229,26 @@ class ViewTests(ViewCase):
         # header (logo, score, best, restart), then the touch area with the
         # level blocks, the message, and the grid. No arrow buttons.
         header, area, game_over_slot = self.layout.content.controls
-        self.assertIs(header, self.view.header)
-        self.assertIs(area, self.view.swipe_area)
+        self.assertIs(header, self.view.header.control)
+        self.assertIs(area, self.view.swipe_area.control)
         self.assertIs(game_over_slot.content, self.view.game_over_button)
         levels, message, board_box = area.content.content.controls
-        self.assertIs(levels, self.view.level_bar)
+        self.assertIs(levels, self.view.level_bar.control)
         self.assertIs(message.content, self.view.status_display)
-        self.assertIs(board_box.content, self.view.board)
+        self.assertIs(board_box.content, self.view.board.stack)
 
     def test_message_is_below_the_level_blocks_and_above_the_grid(self):
-        column = self.view.swipe_area.content.content.controls
-        self.assertEqual(column.index(self.view.status_box), column.index(self.view.level_bar) + 1)
-        board_box = next(c for c in column if getattr(c, "content", None) is self.view.board)
+        column = self.view.swipe_area.control.content.content.controls
+        self.assertEqual(column.index(self.view.status_box), column.index(self.view.level_bar.control) + 1)
+        board_box = next(c for c in column if getattr(c, "content", None) is self.view.board.stack)
         self.assertLess(column.index(self.view.status_box), column.index(board_box))
 
     def test_everything_from_the_color_blocks_down_is_pushed_to_the_bottom(self):
         # The free space goes between the logo and the color blocks.
-        column = self.view.swipe_area.content.content
-        self.assertIs(column.controls[0], self.view.level_bar)
+        column = self.view.swipe_area.control.content.content
+        self.assertIs(column.controls[0], self.view.level_bar.control)
         self.assertEqual(column.alignment, ft.MainAxisAlignment.END)
-        self.assertTrue(self.view.swipe_area.expand)
+        self.assertTrue(self.view.swipe_area.control.expand)
 
     def test_the_only_space_at_the_bottom_is_kept_for_the_big_restart(self):
         slot = self.layout.content.controls[-1]
@@ -356,7 +257,7 @@ class ViewTests(ViewCase):
         self.assertLessEqual(self.layout.content.spacing, 10)
 
     def test_header_stays_at_the_top_with_no_empty_space_above(self):
-        self.assertIs(self.layout.content.controls[0], self.view.header)
+        self.assertIs(self.layout.content.controls[0], self.view.header.control)
         self.assertEqual(self.page.vertical_alignment, ft.MainAxisAlignment.START)
         self.assertEqual(self.layout.content.alignment, ft.MainAxisAlignment.START)
         self.assertIsNone(getattr(self.page, "scroll", None))  # the header never scrolls away
@@ -372,24 +273,24 @@ class ViewTests(ViewCase):
         self.assertEqual(self.page.padding, 10)
 
     def test_board_shows_every_empty_slot_of_the_configured_grid(self):
-        self.assertEqual(len(self.view.slots), GRID_ROWS * GRID_COLS)
-        positions = {(s.left, s.top) for s in self.view.slots}
+        rows, cols = self.game.rows, self.game.cols
+        self.assertEqual(len(self.view.board.slots), rows * cols)
+        positions = {(s.left, s.top) for s in self.view.board.slots}
         self.assertEqual(
             positions,
-            {(c * step(self.view), r * step(self.view))
-             for r in range(GRID_ROWS) for c in range(GRID_COLS)},
+            {(c * step(self.view), r * step(self.view)) for r in range(rows) for c in range(cols)},
         )
-        self.assertTrue(all(s.bgcolor == COLOR_EMPTY for s in self.view.slots))
-        cell = self.view.cell
-        self.assertTrue(all((s.width, s.height) == (cell, cell) for s in self.view.slots))
+        self.assertTrue(all(s.bgcolor == COLOR_EMPTY for s in self.view.board.slots))
+        cell = self.view.board.cell
+        self.assertTrue(all((s.width, s.height) == (cell, cell) for s in self.view.board.slots))
 
     def test_board_is_a_stack_sized_for_the_grid(self):
-        self.assertIsInstance(self.view.board, ft.Stack)
-        size = GRID_COLS * self.view.cell + (GRID_COLS - 1) * CELL_SPACING
-        self.assertEqual((self.view.board.width, self.view.board.height), (size, size))
+        self.assertIsInstance(self.view.board.stack, ft.Stack)
+        size = self.game.cols * self.view.board.cell + (self.game.cols - 1) * CELL_SPACING
+        self.assertEqual((self.view.board.stack.width, self.view.board.stack.height), (size, size))
 
     def test_board_height_leaves_room_for_the_rest(self):
-        self.assertLess(self.view.board.height, self.page.window.height / 2)
+        self.assertLess(self.view.board.stack.height, self.page.window.height / 2)
 
     def test_board_shows_the_engine_squares(self):
         place(self.game, (1, 8, BLUE), (0, 9, GREEN), (1, 9, RED), (2, 9, BLUE))
@@ -402,10 +303,10 @@ class ViewTests(ViewCase):
     def test_refresh_does_not_duplicate_tiles(self):
         place(self.game, (0, 0, BLUE), (1, 0, GREEN))
         self.view.refresh()
-        count = len(self.view.board.controls)
+        count = len(self.view.board.stack.controls)
         self.view.refresh()
-        self.assertEqual(len(self.view.board.controls), count)
-        self.assertEqual(count, GRID_ROWS * GRID_COLS + 2)
+        self.assertEqual(len(self.view.board.stack.controls), count)
+        self.assertEqual(count, self.game.rows * self.game.cols + 2)
 
     def test_new_square_appears_on_the_opposite_side(self):
         with next_position_last(RED):
@@ -417,8 +318,8 @@ class ViewTests(ViewCase):
         self.game.score = 120
         self.game.high_score = 340
         self.view.refresh()
-        self.assertEqual(self.view.score_display.value, "120")
-        self.assertEqual(self.view.high_score_display.value, "340")
+        self.assertEqual(self.view.header.score_text.value, "120")
+        self.assertEqual(self.view.header.best_text.value, "340")
 
     def test_layout_contains_score_cards(self):
         texts = [c.value for c in iter_controls(self.layout) if isinstance(c, ft.Text)]
@@ -466,14 +367,14 @@ class ViewTests(ViewCase):
         with next_colors(GREEN):
             self.swipe("left")
         self.assertEqual(board_colors(self.view)[bottom][:3], [COLOR_EMPTY] * 3)
-        self.assertEqual(self.view.score_display.value, "3")
+        self.assertEqual(self.view.header.score_text.value, "3")
 
     def test_four_in_a_line_score_five(self):
         bottom = self.game.rows - 1
         place(self.game, *[(c, bottom, RED) for c in (0, 2, 5, 9)])
         with next_colors(GREEN):
             self.swipe("left")
-        self.assertEqual(self.view.score_display.value, "5")
+        self.assertEqual(self.view.header.score_text.value, "5")
 
     def test_move_handler_forwards_direction_to_engine(self):
         with patch.object(self.game, "play_move") as play_move:
@@ -490,23 +391,23 @@ class AnimationTests(ViewCase):
         self.page.update = lambda: self.sent.append(self.snapshot())
 
     def snapshot(self):
-        return {sid: (t.left, t.top, t.bgcolor, t.scale) for sid, t in self.view.tiles.items()}
+        return {sid: (t.left, t.top, t.bgcolor, t.scale) for sid, t in self.view.board.tiles.items()}
 
     def test_every_square_tile_animates_its_position(self):
         place(self.game, (0, 0, BLUE), (1, 0, GREEN))
         self.view.refresh()
-        for tile in self.view.tiles.values():
+        for tile in self.view.board.tiles.values():
             self.assertEqual(tile.animate_position.duration, int(ANIMATION_SECONDS * 1000))
             self.assertEqual(tile.animate_scale.duration, int(ANIMATION_SECONDS * 1000))
 
     def test_a_moving_square_keeps_the_same_tile(self):
         place(self.game, (5, 8, BLUE), (6, 9, GREEN))
         self.view.refresh()
-        tiles_before = dict(self.view.tiles)
+        tiles_before = dict(self.view.board.tiles)
         with next_colors(RED):
             move(self.view, "left")
         for square_id, tile in tiles_before.items():
-            self.assertIs(self.view.tiles[square_id], tile)  # same control: Flet animates it
+            self.assertIs(self.view.board.tiles[square_id], tile)  # same control: Flet animates it
         self.assertEqual(sorted(t.left for t in tiles_before.values()), [0, 0])
 
     def test_slide_is_shown_then_given_time_to_finish(self):
@@ -534,7 +435,7 @@ class AnimationTests(ViewCase):
 
     def test_new_square_pops_in(self):
         move(self.view, "left")
-        (new_id,) = self.view.tiles
+        (new_id,) = self.view.board.tiles
         first_seen = next(s for s in self.sent if new_id in s)
         self.assertEqual(first_seen[new_id][3], 0)  # tiny
         self.assertEqual(self.sent[-1][new_id][3], 1)  # full size
@@ -543,15 +444,15 @@ class AnimationTests(ViewCase):
     def test_refresh_shows_existing_squares_at_full_size(self):
         place(self.game, (0, 0, BLUE))
         self.view.refresh()
-        self.assertTrue(all(t.scale == 1 for t in self.view.tiles.values()))
+        self.assertTrue(all(t.scale == 1 for t in self.view.board.tiles.values()))
 
     def test_removed_squares_leave_the_board(self):
         place(self.game, (0, 9, BLUE), (1, 9, BLUE), (7, 9, BLUE), (5, 3, RED))
         self.view.refresh()
         with next_colors(GREEN):
             move(self.view, "left")
-        self.assertEqual(len(self.view.tiles), 4 - 3 + 1)
-        self.assertEqual(len(self.view.board.controls), GRID_ROWS * GRID_COLS + 2)
+        self.assertEqual(len(self.view.board.tiles), 4 - 3 + 1)
+        self.assertEqual(len(self.view.board.stack.controls), self.game.rows * self.game.cols + 2)
 
     def test_last_frame_without_a_match_needs_no_pause(self):
         move(self.view, "left")  # empty board: only a spawn frame
@@ -568,7 +469,7 @@ class AnimationTests(ViewCase):
         )
 
     def test_animation_is_quick(self):
-        self.assertTrue(0 < ANIMATION_SECONDS <= 0.3)
+        self.assertTrue(0 < ANIMATION_SECONDS <= 0.1)
         self.assertTrue(0 < POP_START_SECONDS < ANIMATION_SECONDS)
 
 
@@ -602,13 +503,13 @@ class GoldFlashTests(ViewCase):
         after = board_colors(self.view)
         self.assertEqual(after[self.bottom][:3], [COLOR_EMPTY] * 3)
         self.assertNotIn(COLOR_GOLD, [c for row in after for c in row])
-        self.assertEqual(self.view.score_display.value, "3")
+        self.assertEqual(self.view.header.score_text.value, "3")
 
     def test_no_gold_flash_without_a_match(self):
         # Moving up puts the blues in different rows: no line.
         with next_colors(RED):
             move(self.view, "up")
-        self.assertEqual(self.view.score_display.value, "0")
+        self.assertEqual(self.view.header.score_text.value, "0")
         self.assertNotIn(call(GOLD_FLASH_SECONDS), self.sleep.await_args_list)
 
     def test_each_match_in_a_move_flashes_in_order(self):
@@ -657,7 +558,7 @@ class GoldFlashTests(ViewCase):
         # Move 1: only its slide pause (gold + pop skipped).
         # Move 2 ("up" also slides): its slide pause and its pop.
         self.assertEqual(pauses, [ANIMATION_SECONDS, ANIMATION_SECONDS, POP_START_SECONDS])
-        self.assertEqual(self.view.score_display.value, "3")  # move 1 still scored
+        self.assertEqual(self.view.header.score_text.value, "3")  # move 1 still scored
 
     def test_the_latest_of_several_waiting_swipes_wins(self):
         fired = []
@@ -682,22 +583,59 @@ class GoldFlashTests(ViewCase):
     def test_handler_is_usable_again_after_the_animation(self):
         with next_colors(RED, GREEN):
             move(self.view, "left")
-            self.assertFalse(self.view._busy)
-            tiles = len(self.view.tiles)
+            self.assertFalse(self.view.turns.busy)
+            tiles = len(self.view.board.tiles)
             move(self.view, "up")
-        self.assertEqual(len(self.view.tiles), tiles + 1)
+        self.assertEqual(len(self.view.board.tiles), tiles + 1)
 
     def test_flash_pause_is_short(self):
-        self.assertTrue(0 < GOLD_FLASH_SECONDS <= 0.3)
+        self.assertTrue(0 < GOLD_FLASH_SECONDS <= 0.15)
+
+    def test_a_scoring_move_settles_in_under_0_3_seconds(self):
+        with next_colors(RED):
+            move(self.view, "left")  # slide, gold, new square
+        self.assertLess(sum(c.args[0] for c in self.sleep.await_args_list), 0.3)
 
 
 class MainTests(unittest.TestCase):
+    def start(self, **page_options):
+        page = MockPage(**page_options)
+        with patch("ui.animation.asyncio.sleep", new_callable=AsyncMock):
+            self.assertIsNone(asyncio.run(ui.main(page)))
+        return page
+
     def test_main_builds_the_view_on_the_page(self):
-        page = MockPage()
-        self.assertIsNone(ui.main(page))
+        page = self.start()
         self.assertEqual(len(page.controls), 1)
         self.assertEqual(page.title, "Block Fall")
         self.assertTrue(page.updated)
+
+    def test_a_portuguese_device_starts_in_portuguese(self):
+        page = self.start(device_languages=("pt-BR", "en-US"))
+        texts = [c.value for c in iter_controls(page.controls[0]) if isinstance(c, ft.Text)]
+        self.assertIn("Alinhe 3 ou mais quadrados da mesma cor.", texts)
+        self.assertIn("PONTOS", texts)
+
+    def test_any_other_device_starts_in_english(self):
+        page = self.start(device_languages=("es-ES",))
+        texts = [c.value for c in iter_controls(page.controls[0]) if isinstance(c, ft.Text)]
+        self.assertIn("Line up 3 or more squares of the same color.", texts)
+
+    def test_no_device_info_means_english(self):
+        for answer in (None, RuntimeError("not available here")):
+            with self.subTest(answer=answer):
+                page = self.start(device_languages=answer)
+                texts = [c.value for c in iter_controls(page.controls[0]) if isinstance(c, ft.Text)]
+                self.assertIn("SCORE", texts)
+
+    def test_changing_the_device_language_switches_the_app(self):
+        page = self.start()
+        page.on_locale_change(SimpleNamespace(locales=[ft.Locale("pt", "BR")]))
+        texts = [c.value for c in iter_controls(page.controls[0]) if isinstance(c, ft.Text)]
+        self.assertIn("RECORDE", texts)
+        page.on_locale_change(SimpleNamespace(locales=[ft.Locale("en", "GB")]))
+        texts = [c.value for c in iter_controls(page.controls[0]) if isinstance(c, ft.Text)]
+        self.assertIn("BEST", texts)
 
 
 class OrientationTests(unittest.TestCase):
@@ -756,7 +694,7 @@ class PastelThemeTests(ViewCase):
         self.assertTrue(all(lightness(color) < 0.6 for color in colors), colors)
 
     def test_header_blocks_are_pastel_too(self):
-        for block in self.view.header_blocks:
+        for block in self.view.header.blocks:
             self.assertGreater(lightness(block.bgcolor), 0.7)
 
 
@@ -764,23 +702,23 @@ class LevelBarTests(ViewCase):
     """5 blocks above the grid, one per color: black until unlocked."""
 
     def colors(self):
-        return [block.bgcolor for block in self.view.level_bar.controls]
+        return [block.bgcolor for block in self.view.level_bar.control.controls]
 
     def test_five_blocks_in_color_order(self):
-        self.assertEqual(len(self.view.level_bar.controls), 5)
-        self.assertEqual(self.view.level_blocks, self.view.level_bar.controls)
+        self.assertEqual(len(self.view.level_bar.control.controls), 5)
+        self.assertEqual(self.view.level_bar.blocks, self.view.level_bar.control.controls)
 
     def test_a_new_game_shows_two_colors_and_three_black_blocks(self):
         self.assertEqual(self.colors(), [TILE_COLORS[BLUE], TILE_COLORS[GREEN]] + [COLOR_LOCKED] * 3)
 
     def test_locked_blocks_are_gray_with_a_lock(self):
-        for block in self.view.level_blocks[2:]:
+        for block in self.view.level_bar.blocks[2:]:
             self.assertEqual(block.bgcolor, COLOR_LOCKED)
             self.assertIsInstance(block.content, ft.Icon)
             self.assertEqual(block.content.icon, ft.Icons.LOCK)
             self.assertEqual(block.content.color, COLOR_LOCK_ICON)
             self.assertEqual(block.alignment, ft.Alignment.CENTER)  # lock in the middle
-        for block in self.view.level_blocks[:2]:
+        for block in self.view.level_bar.blocks[:2]:
             self.assertIsNone(block.content)
 
     def test_locked_gray_cannot_be_mistaken_for_a_color(self):
@@ -795,8 +733,8 @@ class LevelBarTests(ViewCase):
     def test_lock_disappears_when_the_color_unlocks(self):
         self.game.score = 50
         self.view.refresh()
-        self.assertIsNone(self.view.level_blocks[2].content)
-        self.assertIsInstance(self.view.level_blocks[3].content, ft.Icon)
+        self.assertIsNone(self.view.level_bar.blocks[2].content)
+        self.assertIsInstance(self.view.level_bar.blocks[3].content, ft.Icon)
 
     def test_blocks_light_up_as_the_score_grows(self):
         expected = {
@@ -812,7 +750,7 @@ class LevelBarTests(ViewCase):
             )
 
     def test_each_block_tells_when_it_unlocks(self):
-        tips = [block.tooltip for block in self.view.level_blocks]
+        tips = [block.tooltip for block in self.view.level_bar.blocks]
         self.assertEqual(tips[:2], ["Starting color", "Starting color"])
         self.assertEqual(tips[2:], [f"Unlocks at {UNLOCK_SCORES[i]} points" for i in (2, 3, 4)])
 
@@ -824,30 +762,32 @@ class LevelBarTests(ViewCase):
         self.assertEqual(self.colors()[2], COLOR_LOCKED)
         with next_colors(GREEN):
             self.swipe("left")
-        self.assertEqual(self.view.score_display.value, "51")
+        self.assertEqual(self.view.header.score_text.value, "51")
+        self.assertEqual(self.colors()[2], COLOR_GOLD)  # unlocking...
+        run_background_tasks(self.page)
         self.assertEqual(self.colors()[2], TILE_COLORS[RED])
 
     def test_blocks_are_squares_like_the_board(self):
-        for block in self.view.level_blocks:
+        for block in self.view.level_bar.blocks:
             self.assertEqual((block.width, block.height), (CELL_SIZE, CELL_SIZE))
             self.assertEqual(block.border_radius, TILE_RADIUS)
 
 
 class StartTests(unittest.TestCase):
     def test_a_new_game_shows_squares_on_the_grid(self):
-        with patch("ui.asyncio.sleep", new_callable=AsyncMock):
+        with patch("ui.animation.asyncio.sleep", new_callable=AsyncMock):
             view = BlockFallView(MockPage())
-        self.assertEqual(len(view.tiles), round(GRID_ROWS * GRID_COLS * START_FILL))
-        colors = {tile.bgcolor for tile in view.tiles.values()}
+        self.assertEqual(len(view.board.tiles), round(GRID_ROWS * GRID_COLS * START_FILL))
+        colors = {tile.bgcolor for tile in view.board.tiles.values()}
         self.assertLessEqual(colors, {TILE_COLORS[BLUE], TILE_COLORS[GREEN]})
-        self.assertTrue(all(tile.scale == 1 for tile in view.tiles.values()))
+        self.assertTrue(all(tile.scale == 1 for tile in view.board.tiles.values()))
 
 
 def needed_width(view, page):
     """Screen width the board really takes: board + all paddings around it."""
     layout = page.controls[0]
-    board_box = next(c for c in iter_controls(layout) if getattr(c, "content", None) is view.board)
-    return view.board.width + 2 * (page.padding + layout.padding + board_box.padding)
+    board_box = next(c for c in iter_controls(layout) if getattr(c, "content", None) is view.board.stack)
+    return view.board.stack.width + 2 * (page.padding + layout.padding + board_box.padding)
 
 
 class BoardFitTests(unittest.TestCase):
@@ -856,7 +796,7 @@ class BoardFitTests(unittest.TestCase):
     WIDTHS = (320, 360, 374, 375, 390, 412, 430, 800)
 
     def view(self, width, game=None):
-        with patch("ui.asyncio.sleep", new_callable=AsyncMock):
+        with patch("ui.animation.asyncio.sleep", new_callable=AsyncMock):
             page = MockPage(width=width)
             view = BlockFallView(page, game or BlockFallEngine(start_squares=0))
         return page, view
@@ -872,8 +812,8 @@ class BoardFitTests(unittest.TestCase):
         for row in range(GRID_ROWS):
             view.game.place_square(GRID_COLS - 1, row, BLUE)
         view.refresh()
-        for tile in view.tiles.values():
-            self.assertLessEqual(tile.left + tile.width, view.board.width)
+        for tile in view.board.tiles.values():
+            self.assertLessEqual(tile.left + tile.width, view.board.stack.width)
         self.assertLessEqual(needed_width(view, page), 360)
 
     def test_regression_fits_a_windows_window_of_390_with_its_frame(self):
@@ -893,22 +833,22 @@ class BoardFitTests(unittest.TestCase):
             for width in (360, 412):
                 with self.subTest(rows=rows, cols=cols, width=width):
                     page, view = self.view(width, BlockFallEngine(rows=rows, cols=cols, start_squares=0))
-                    self.assertEqual(len(view.slots), rows * cols)
+                    self.assertEqual(len(view.board.slots), rows * cols)
                     self.assertAlmostEqual(needed_width(view, page), width)
-                    last = max(view.slots, key=lambda s: (s.left, s.top))
-                    self.assertAlmostEqual(last.left + last.width, view.board.width)
-                    self.assertAlmostEqual(last.top + last.height, view.board.height)
+                    last = max(view.board.slots, key=lambda s: (s.left, s.top))
+                    self.assertAlmostEqual(last.left + last.width, view.board.stack.width)
+                    self.assertAlmostEqual(last.top + last.height, view.board.stack.height)
                     self.assertAlmostEqual(
-                        view.board.height, rows * view.cell + (rows - 1) * CELL_SPACING
+                        view.board.stack.height, rows * view.board.cell + (rows - 1) * CELL_SPACING
                     )
 
     def test_squares_on_a_non_square_grid_land_in_the_right_place(self):
         page, view = self.view(360, BlockFallEngine(rows=6, cols=12, start_squares=0))
         view.game.place_square(11, 5, RED)
         view.refresh()
-        (tile,) = view.tiles.values()
-        self.assertAlmostEqual(tile.left + tile.width, view.board.width)
-        self.assertAlmostEqual(tile.top + tile.height, view.board.height)
+        (tile,) = view.board.tiles.values()
+        self.assertAlmostEqual(tile.left + tile.width, view.board.stack.width)
+        self.assertAlmostEqual(tile.top + tile.height, view.board.stack.height)
 
     def test_page_does_not_scroll_so_swipes_always_play(self):
         page, view = self.view(360, BlockFallEngine(rows=30, cols=10, start_squares=0))
@@ -918,10 +858,10 @@ class BoardFitTests(unittest.TestCase):
         page, view = self.view(320)
         view.game.place_square(3, 4, GREEN)
         view.refresh()
-        self.assertEqual(view.board.width, GRID_COLS * view.cell + (GRID_COLS - 1) * CELL_SPACING)
-        for control in view.slots + list(view.tiles.values()):
-            self.assertEqual((control.width, control.height), (view.cell, view.cell))
-        (tile,) = view.tiles.values()
+        self.assertEqual(view.board.stack.width, GRID_COLS * view.board.cell + (GRID_COLS - 1) * CELL_SPACING)
+        for control in view.board.slots + list(view.board.tiles.values()):
+            self.assertEqual((control.width, control.height), (view.board.cell, view.board.cell))
+        (tile,) = view.board.tiles.values()
         self.assertEqual((tile.left, tile.top), (3 * step(view), 4 * step(view)))
 
     def test_unknown_page_width_uses_a_small_safe_size(self):
@@ -937,67 +877,42 @@ class BoardFitTests(unittest.TestCase):
         page.updated = False
         view._handle_resize(type("ResizeEvent", (), {"width": 330, "height": 700})())
         self.assertAlmostEqual(needed_width(view, page), 330)
-        (tile,) = view.tiles.values()
-        self.assertEqual(tile.left, (GRID_COLS - 1) * (view.cell + CELL_SPACING))
-        self.assertEqual(tile.width, view.cell)
+        (tile,) = view.board.tiles.values()
+        self.assertEqual(tile.left, (GRID_COLS - 1) * (view.board.cell + CELL_SPACING))
+        self.assertEqual(tile.width, view.board.cell)
         # The empty slots underneath follow too, and all stay inside the board.
-        for index, slot in enumerate(view.slots):
+        for index, slot in enumerate(view.board.slots):
             self.assertEqual((slot.width, slot.left, slot.top),
-                             (view.cell, index % GRID_COLS * step(view), index // GRID_COLS * step(view)))
-            self.assertLessEqual(slot.left + slot.width, view.board.width + 1e-9)
+                             (view.board.cell, index % GRID_COLS * step(view), index // GRID_COLS * step(view)))
+            self.assertLessEqual(slot.left + slot.width, view.board.stack.width + 1e-9)
         self.assertTrue(page.updated)
 
     def test_layout_still_fits_the_screen_height(self):
         page, view = self.view(360)
-        self.assertLess(view.board.height, 640 / 2)
+        self.assertLess(view.board.stack.height, 640 / 2)
 
 
 class LogoTests(ViewCase):
     """A logo replaces the plain "Block Fall" title."""
 
     def test_logo_is_in_the_header_instead_of_a_plain_title(self):
-        header = self.view.header
-        self.assertIs(header.controls[0].content, self.view.logo)
+        header = self.view.header.control
+        self.assertIs(header.controls[0].content, self.view.header.logo)
         plain = [c.value for c in iter_controls(header) if isinstance(c, ft.Text) and c.value]
         self.assertNotIn("Block Fall", plain)
         self.assertEqual(self.page.title, "Block Fall")  # still the window / app name
-
-    def test_logo_is_big_with_the_name_on_two_lines(self):
-        mark, name = create_logo().controls
-        block, fall = name.controls
-        self.assertEqual((block.value, fall.value), ("Block", "Fall"))
-        self.assertGreaterEqual(block.size, 28)
-        self.assertEqual(block.size, fall.size)
-        self.assertNotEqual(block.color, fall.color)
-        for text in (block, fall):
-            self.assertLess(lightness(text.color), 0.6)  # readable on the cream background
-
-    def test_no_gap_between_block_and_fall(self):
-        _, name = create_logo().controls
-        self.assertEqual(name.spacing, 0)
-        for text in name.controls:
-            self.assertLessEqual(text.style.height, 0.95)  # tight line height
-
-    def test_mark_is_a_big_mini_board_with_a_gold_line_of_three(self):
-        mark, _ = create_logo().controls
-        rows = [[cell.bgcolor for cell in row.controls] for row in mark.controls]
-        self.assertEqual(len(rows), 3)
-        self.assertTrue(all(len(row) == 3 for row in rows))
-        self.assertEqual(rows[1], [COLOR_GOLD] * 3)  # the game: line up 3
-        self.assertTrue(set(rows[0] + rows[2]) <= {TILE_COLORS[c] for c in SQUARE_COLORS})
-        self.assertGreaterEqual(mark.controls[0].controls[0].width, 16)
 
 
 class RestartTests(ViewCase):
     """A button to start a new game."""
 
     def restart(self):
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
 
     def test_restart_is_a_blue_block_below_best(self):
-        score, best, level, restart = self.view.header_blocks
-        self.assertIs(restart, self.view.restart_block)
-        top_row, bottom_row = self.view.header.controls[1].controls
+        score, best, level, restart = self.view.header.blocks
+        self.assertIs(restart, self.view.header.restart_button)
+        top_row, bottom_row = self.view.header.control.controls[1].controls
         self.assertEqual(top_row.controls, [score, best])
         self.assertEqual(bottom_row.controls, [level, restart])  # restart under BEST
         self.assertEqual((restart.width, restart.height, restart.border_radius),
@@ -1012,8 +927,8 @@ class RestartTests(ViewCase):
         self.assertTrue(190 <= hue <= 240, hue)
 
     def test_restart_block_has_a_label_like_the_others(self):
-        texts = [c.value for c in iter_controls(self.view.restart_block) if isinstance(c, ft.Text)]
-        icons = [c.icon for c in iter_controls(self.view.restart_block) if isinstance(c, ft.Icon)]
+        texts = [c.value for c in iter_controls(self.view.header.restart_button) if isinstance(c, ft.Text)]
+        icons = [c.icon for c in iter_controls(self.view.header.restart_button) if isinstance(c, ft.Icon)]
         self.assertEqual((texts, icons), (["RESTART"], [ft.Icons.RESTART_ALT]))
 
     def test_restart_starts_a_new_game_and_keeps_the_best_score(self):
@@ -1021,16 +936,16 @@ class RestartTests(ViewCase):
         self.game.score = self.game.high_score = 200
         self.game.game_over = True
         self.view.refresh()
-        old_tiles = set(self.view.tiles)
+        old_tiles = set(self.view.board.tiles)
         self.game.start_squares = 10
         self.page.updated = False
         self.restart()
         self.assertEqual((self.game.score, self.game.high_score, self.game.game_over), (0, 200, False))
-        self.assertEqual(self.view.score_display.value, "0")
-        self.assertEqual(self.view.high_score_display.value, "200")
-        self.assertEqual(len(self.view.tiles), 10)
-        self.assertTrue(old_tiles.isdisjoint(self.view.tiles))
-        self.assertEqual([b.bgcolor for b in self.view.level_blocks[2:]], [COLOR_LOCKED] * 3)
+        self.assertEqual(self.view.header.score_text.value, "0")
+        self.assertEqual(self.view.header.best_text.value, "200")
+        self.assertEqual(len(self.view.board.tiles), 10)
+        self.assertTrue(old_tiles.isdisjoint(self.view.board.tiles))
+        self.assertEqual([b.bgcolor for b in self.view.level_bar.blocks[2:]], [COLOR_LOCKED] * 3)
         self.assertEqual(self.view.status_display.value, "Line up 3 or more squares of the same color.")
         self.assertTrue(self.page.updated)
 
@@ -1039,10 +954,10 @@ class RestartTests(ViewCase):
         self.assertIs(self.view.status_box.content, self.view.status_display)
         self.assertEqual(self.view.status_box.height, 40)
 
-    def test_game_over_message_points_to_the_restart_button(self):
+    def test_game_over_message_is_only_game_over(self):
         self.game.game_over = True
         self.view.refresh()
-        self.assertIn("Restart", self.view.status_display.value)
+        self.assertEqual(self.view.status_display.value, "GAME OVER")
 
     def test_restart_during_an_animation_happens_right_after_it(self):
         place(self.game, (0, 0, BLUE))
@@ -1059,12 +974,20 @@ class RestartTests(ViewCase):
             move(self.view, "down")
         self.assertTrue(all(n >= 1 for n in squares_during))  # not reset mid-animation
         self.assertEqual(self.game.squares(), {})  # ...but right after (new empty game)
-        self.assertEqual(self.view.tiles, {})
-        self.assertIsNone(self.view._pending)
+        self.assertEqual(self.view.board.tiles, {})
+        self.assertIsNone(self.view.turns.pending)
+
+
+def run_background_tasks(page):
+    """Run what the app handed to page.run_task (Flet runs it in the background)."""
+    while page.tasks:
+        handler, args = page.tasks.pop(0)
+        asyncio.run(handler(*args))
 
 
 class UnlockFlashTests(ViewCase):
-    """A newly unlocked level turns gold first, then shows its color."""
+    """A newly unlocked level turns gold, then shows its color, in the
+    background: it never holds up the game."""
 
     def setUp(self):
         super().setUp()
@@ -1072,7 +995,7 @@ class UnlockFlashTests(ViewCase):
         place(self.game, (0, self.bottom, BLUE), (1, self.bottom, BLUE), (7, self.bottom, BLUE))
         self.game.score = 48  # the line of 3 brings it to 51: the 3rd color unlocks
         self.view.refresh()
-        self.third = self.view.level_blocks[2]
+        self.third = self.view.level_bar.blocks[2]
         self.seen = []  # the 3rd level block as sent to the screen
         self.page.update = lambda: self.seen.append(
             (self.third.bgcolor, self.third.content is not None, self.view.status_display.value)
@@ -1081,6 +1004,7 @@ class UnlockFlashTests(ViewCase):
     def test_locked_then_gold_then_its_color(self):
         with next_colors(GREEN):
             move(self.view, "left")
+        run_background_tasks(self.page)
         colors = [bg for bg, _, _ in self.seen]
         self.assertEqual(colors[0], COLOR_LOCKED)
         self.assertIn(COLOR_GOLD, colors)
@@ -1088,31 +1012,79 @@ class UnlockFlashTests(ViewCase):
         first_gold = colors.index(COLOR_GOLD)
         self.assertNotIn(TILE_COLORS[RED], colors[:first_gold])  # gold comes first
 
-    def test_gold_is_on_screen_during_the_pause(self):
+    def test_the_move_does_not_wait_for_the_flash(self):
+        with next_colors(GREEN):
+            move(self.view, "left")
+        # Only the move's own pauses (slide, gold, pop): no extra wait for the level.
+        self.assertEqual(
+            self.sleep.await_args_list,
+            [call(ANIMATION_SECONDS), call(GOLD_FLASH_SECONDS), call(POP_START_SECONDS)],
+        )
+        self.assertFalse(self.view.turns.busy)  # the next swipe can play at once
+        # ...while the level block is still gold, with the message:
+        self.assertEqual(self.third.bgcolor, COLOR_GOLD)
+        self.assertEqual(self.view.status_display.value, "New color unlocked!")
+        self.assertEqual(len(self.page.tasks), 1)  # the flash ends in the background
+
+    def test_flash_ends_with_its_color_and_the_normal_message(self):
+        with next_colors(GREEN):
+            move(self.view, "left")
         during = []
 
         async def pause(seconds):
-            if seconds == UNLOCK_FLASH_SECONDS:
-                during.append(self.seen[-1])
+            during.append((seconds, self.third.bgcolor))
 
         self.sleep.side_effect = pause
-        with next_colors(GREEN):
-            move(self.view, "left")
-        ((color, has_lock, status),) = during
-        self.assertEqual((color, has_lock), (COLOR_GOLD, False))
-        self.assertEqual(status, "New color unlocked!")
-
-    def test_status_goes_back_to_normal_afterwards(self):
-        with next_colors(GREEN):
-            move(self.view, "left")
+        run_background_tasks(self.page)
+        self.assertEqual(during, [(UNLOCK_FLASH_SECONDS, COLOR_GOLD)])
+        self.assertEqual(self.third.bgcolor, TILE_COLORS[RED])
+        self.assertIsNone(self.third.content)
         self.assertEqual(self.view.status_display.value, "Line up 3 or more squares of the same color.")
+        self.assertEqual(self.seen[-1][0], TILE_COLORS[RED])  # sent to the screen
+
+    def test_the_flash_ending_does_not_touch_the_grid(self):
+        with next_colors(GREEN):
+            move(self.view, "left")
+        before = {i: (t.left, t.top, t.bgcolor, t.scale) for i, t in self.view.board.tiles.items()}
+        run_background_tasks(self.page)
+        after = {i: (t.left, t.top, t.bgcolor, t.scale) for i, t in self.view.board.tiles.items()}
+        self.assertEqual(after, before)  # a move animating meanwhile is not disturbed
+
+    def test_flash_ending_during_the_next_move_leaves_its_slide_alone(self):
+        with next_colors(GREEN):
+            move(self.view, "left")  # unlocks: the flash will end in the background
+        (flash_end, args), = self.page.tasks
+        self.page.tasks.clear()
+        seen = []
+
+        async def pause(seconds):
+            if seconds == ANIMATION_SECONDS and not seen:  # the next move is sliding
+                self.sleep.side_effect = None
+                await flash_end(*args)  # ...when the flash ends
+                seen.append({i: (t.left, t.top) for i, t in self.view.board.tiles.items()})
+
+        self.sleep.side_effect = pause
+        with next_colors(RED):
+            move(self.view, "down")
+        slide = self.game.frames[0]
+        self.assertEqual(slide.kind, "slide")
+        step = self.view.board.cell + CELL_SPACING
+        # Mid-slide, the grid shows the slide step (not the end of the move).
+        self.assertEqual(seen[0], {i: (c * step, r * step) for i, (c, r, _) in slide.squares.items()})
+
+    def test_flash_ending_after_game_over_keeps_game_over(self):
+        with next_colors(GREEN):
+            move(self.view, "left")
+        self.game.game_over = True
+        run_background_tasks(self.page)
+        self.assertEqual(self.view.status_display.value, "GAME OVER")
 
     def test_no_unlock_flash_without_a_new_level(self):
         self.game.score = 0
         self.view.refresh()
         with next_colors(GREEN):
             move(self.view, "left")
-        self.assertNotIn(call(UNLOCK_FLASH_SECONDS), self.sleep.await_args_list)
+        self.assertEqual(self.page.tasks, [])
         self.assertNotIn(COLOR_GOLD, [bg for bg, _, _ in self.seen])
 
     def test_two_levels_at_once_both_flash(self):
@@ -1121,70 +1093,75 @@ class UnlockFlashTests(ViewCase):
             self.game.frames = []
             return True
 
-        during = []
-
-        async def pause(seconds):
-            during.append([b.bgcolor for b in self.view.level_blocks])
-
-        self.sleep.side_effect = pause
         self.game.score = 0
         self.view.refresh()
         with patch.object(self.game, "play_move", side_effect=jump):
             move(self.view, "left")
-        self.assertEqual(during[-1][2:4], [COLOR_GOLD, COLOR_GOLD])
-        self.assertEqual(during[-1][4], COLOR_LOCKED)
-        self.assertEqual([b.bgcolor for b in self.view.level_blocks][2:4],
+        self.assertEqual([b.bgcolor for b in self.view.level_bar.blocks][2:],
+                         [COLOR_GOLD, COLOR_GOLD, COLOR_LOCKED])
+        run_background_tasks(self.page)
+        self.assertEqual([b.bgcolor for b in self.view.level_bar.blocks][2:4],
                          [TILE_COLORS[RED], TILE_COLORS[PEACH]])
 
-    def test_a_swipe_during_the_move_also_skips_the_unlock_flash(self):
-        swiped = []
-
-        async def swipe_again(seconds):
-            if not swiped:
-                swiped.append(True)
-                await self.view._handle_move("up")
-
-        self.sleep.side_effect = swipe_again
-        with next_colors(GREEN, GREEN):
-            move(self.view, "left")
-        self.assertNotIn(call(UNLOCK_FLASH_SECONDS), self.sleep.await_args_list)
-        self.assertEqual(self.third.bgcolor, TILE_COLORS[RED])  # unlocked all the same
-
-    def test_unlock_flash_is_long_enough_to_notice(self):
-        self.assertTrue(0.5 <= UNLOCK_FLASH_SECONDS <= 1.5)
+    def test_unlock_flash_is_as_fast_as_the_gold_in_the_grid(self):
+        self.assertEqual(UNLOCK_FLASH_SECONDS, GOLD_FLASH_SECONDS)
 
 
 class HeaderTests(ViewCase):
     """Logo on the left; SCORE and BEST, with LEVEL and RESTART below them."""
 
     def test_header_holds_the_logo_and_two_rows_of_blocks(self):
-        logo_holder, blocks = self.view.header.controls
-        self.assertIs(logo_holder.content, self.view.logo)
+        logo_holder, blocks = self.view.header.control.controls
+        self.assertIs(logo_holder.content, self.view.header.logo)
         rows = [row.controls for row in blocks.controls]
-        self.assertEqual(rows, [self.view.header_blocks[:2], self.view.header_blocks[2:]])
+        self.assertEqual(rows, [self.view.header.blocks[:2], self.view.header.blocks[2:]])
 
     def test_all_header_blocks_have_the_same_size(self):
-        sizes = {(b.width, b.height) for b in self.view.header_blocks}
+        sizes = {(b.width, b.height) for b in self.view.header.blocks}
         self.assertEqual(len(sizes), 1)
+
+    def test_header_blocks_are_large(self):
+        block = self.view.header.blocks[0]
+        self.assertGreaterEqual((block.width, block.height), (64, 50))
+        label, value = block.content.controls
+        self.assertGreaterEqual(label.size, 10)
+        self.assertGreaterEqual(value.size, 20)
+        self.assertGreaterEqual(self.view.header.level_text.size, 11)
+        icon = self.view.header.restart_button.content.controls[1]
+        self.assertGreaterEqual(icon.size, 24)
+
+    def test_everything_fits_a_small_360x640_phone(self):
+        page = MockPage(width=360)
+        with patch("ui.animation.asyncio.sleep", new_callable=AsyncMock):
+            view = BlockFallView(page)  # the real default game
+        layout = page.controls[0].content
+        header_h = 2 * view.header.blocks[0].height + view.header.control.controls[1].spacing
+        body = view.swipe_area.control.content.content
+        levels_h = view.level_bar.blocks[0].height
+        board_h = view.board.stack.height + 2 * view.board.frame.padding
+        body_h = levels_h + view.status_box.height + board_h + 2 * body.spacing
+        slot_h = layout.controls[-1].height
+        total = 2 * (page.padding + page.controls[0].padding) + header_h + body_h + slot_h + 2 * layout.spacing
+        self.assertLessEqual(total, 640)
 
     def test_whole_header_with_the_big_logo_fits_a_360_phone(self):
         available = 360 - 2 * (self.page.padding + self.layout.padding)
-        _, blocks = self.view.header.controls
+        _, blocks = self.view.header.control.controls
         top_row = blocks.controls[0]
         blocks_width = sum(b.width for b in top_row.controls) + top_row.spacing
-        mark, name = self.view.logo.controls
+        mark, name = self.view.header.logo.controls
         cell = mark.controls[0].controls[0].width
         mark_width = 3 * cell + 2 * mark.controls[0].spacing
         # No font measuring in tests: estimate the name generously (heavy bold
         # letters average about 0.62 of the font size; the longer line counts).
         name_width = max(0.62 * t.size * len(t.value) for t in name.controls)
-        total = mark_width + self.view.logo.spacing + name_width + self.view.header.spacing + blocks_width
+        total = mark_width + self.view.header.logo.spacing + name_width + self.view.header.control.spacing + blocks_width
         self.assertLessEqual(total, available)
 
     def test_logo_is_not_taller_than_the_two_rows_of_blocks(self):
-        _, blocks = self.view.header.controls
-        blocks_height = 2 * self.view.header_blocks[0].height + blocks.spacing
-        mark, name = self.view.logo.controls
+        _, blocks = self.view.header.control.controls
+        blocks_height = 2 * self.view.header.blocks[0].height + blocks.spacing
+        mark, name = self.view.header.logo.controls
         cell = mark.controls[0].controls[0].height
         self.assertLessEqual(3 * cell + 2 * mark.spacing, blocks_height)
         self.assertLessEqual(sum(1.25 * t.size for t in name.controls), blocks_height)
@@ -1192,24 +1169,6 @@ class HeaderTests(ViewCase):
 
 class SwipeTests(ViewCase):
     """Play by touch: swipe anywhere in the game area, like 2048."""
-
-    def test_direction_from_the_finger_movement(self):
-        self.assertEqual(swipe_direction(60, 10), "right")
-        self.assertEqual(swipe_direction(-60, -10), "left")
-        self.assertEqual(swipe_direction(5, 60), "down")
-        self.assertEqual(swipe_direction(-5, -60), "up")
-
-    def test_mostly_horizontal_or_vertical_diagonals(self):
-        self.assertEqual(swipe_direction(50, 30), "right")
-        self.assertEqual(swipe_direction(30, -50), "up")
-
-    def test_short_or_exactly_diagonal_drags_are_not_moves(self):
-        self.assertEqual(SWIPE_MIN_DISTANCE, 24)
-        self.assertIsNone(swipe_direction(10, 5))
-        self.assertIsNone(swipe_direction(0, 0))
-        self.assertIsNone(swipe_direction(SWIPE_MIN_DISTANCE - 1, 0))
-        self.assertEqual(swipe_direction(SWIPE_MIN_DISTANCE, 0), "right")
-        self.assertIsNone(swipe_direction(40, 40))
 
     def test_each_swipe_plays_that_move(self):
         for direction in SWIPES:
@@ -1230,7 +1189,7 @@ class SwipeTests(ViewCase):
         play_move.assert_not_called()
 
     def test_an_interrupted_swipe_does_not_leak_into_the_next_one(self):
-        area = self.view.swipe_area
+        area = self.view.swipe_area.control
         area.on_pan_start(None)
         area.on_pan_update(SimpleNamespace(local_delta=ft.Offset(20, 0)))
         # ...the gesture is cancelled: no pan end. Then a tiny new drag:
@@ -1244,11 +1203,11 @@ class SwipeTests(ViewCase):
         play_move.assert_called_once_with("left")
 
     def test_swipe_area_covers_levels_message_and_grid_but_not_the_header(self):
-        area = self.view.swipe_area
+        area = self.view.swipe_area.control
         inside = list(iter_controls(area))
-        for control in (self.view.level_bar, self.view.status_display, self.view.board):
+        for control in (self.view.level_bar.control, self.view.status_display, self.view.board.stack):
             self.assertIn(control, inside)
-        self.assertNotIn(self.view.restart_block, inside)
+        self.assertNotIn(self.view.header.restart_button, inside)
         self.assertTrue(area.expand)
         self.assertTrue(area.content.expand)
         self.assertEqual(area.content.bgcolor, COLOR_BG)  # painted: swipes work on empty space too
@@ -1263,18 +1222,25 @@ class SwipeTests(ViewCase):
 class DifficultyTests(ViewCase):
     """The LEVEL block (below SCORE) switches between 3 grid sizes."""
 
+    def setUp(self):
+        super().setUp()
+        # The real default game: MIDDLE's grid (empty, for predictable tests).
+        self.view.game = self.game = BlockFallEngine(start_squares=0)
+        self.view.board.rebuild(self.game.rows, self.game.cols)
+        self.view.refresh()
+
     def level_texts(self):
-        return [c.value for c in iter_controls(self.view.level_button) if isinstance(c, ft.Text)]
+        return [c.value for c in iter_controls(self.view.header.level_button) if isinstance(c, ft.Text)]
 
     def tap(self):
-        self.view.level_button.on_click(None)
+        self.view.header.level_button.on_click(None)
 
     def test_the_three_levels(self):
         self.assertEqual(
             [(name, rows, cols) for name, rows, cols, _ in DIFFICULTIES],
-            [("BEGINNER", 12, 12), ("MIDDLE", 8, 8), ("MASTER", 6, 6)],
+            [("BEGINNER", 6, 6), ("MIDDLE", 5, 5), ("MASTER", 4, 4)],
         )
-        self.assertEqual(DEFAULT_DIFFICULTY, 0)
+        self.assertEqual(DIFFICULTIES[DEFAULT_DIFFICULTY][0], "MIDDLE")
 
     def test_level_colors_green_yellow_red(self):
         hues = []
@@ -1287,26 +1253,26 @@ class DifficultyTests(ViewCase):
         self.assertTrue(red <= 15 or red >= 345, red)
 
     def test_level_block_is_below_score(self):
-        score, _best, level, _restart = self.view.header_blocks
-        self.assertIs(level, self.view.level_button)
-        top_row, bottom_row = self.view.header.controls[1].controls
+        score, _best, level, _restart = self.view.header.blocks
+        self.assertIs(level, self.view.header.level_button)
+        top_row, bottom_row = self.view.header.control.controls[1].controls
         self.assertEqual(top_row.controls.index(score), bottom_row.controls.index(level))
 
-    def test_starts_at_beginner_in_green(self):
-        self.assertEqual(self.level_texts(), ["LEVEL", "BEGINNER"])
-        self.assertEqual(self.view.level_button.bgcolor, DIFFICULTIES[0][3])
-        self.assertEqual((self.game.rows, self.game.cols), (12, 12))
+    def test_starts_at_middle_in_yellow(self):
+        self.assertEqual(self.level_texts(), ["LEVEL", "MIDDLE"])
+        self.assertEqual(self.view.header.level_button.bgcolor, DIFFICULTIES[1][3])
+        self.assertEqual((self.game.rows, self.game.cols), (5, 5))
 
     def test_each_tap_goes_to_the_next_level_and_its_grid(self):
-        for name, rows, cols, color in list(DIFFICULTIES[1:]) + [DIFFICULTIES[0]]:
+        for name, rows, cols, color in (DIFFICULTIES[2], DIFFICULTIES[0], DIFFICULTIES[1]):
             with self.subTest(level=name):
                 self.tap()
                 self.assertEqual(self.level_texts(), ["LEVEL", name])
-                self.assertEqual(self.view.level_button.bgcolor, color)
+                self.assertEqual(self.view.header.level_button.bgcolor, color)
                 game = self.view.game
                 self.assertEqual((game.rows, game.cols), (rows, cols))
-                self.assertEqual(len(self.view.slots), rows * cols)
-                self.assertEqual(len(self.view.board.controls), rows * cols + len(self.view.tiles))
+                self.assertEqual(len(self.view.board.slots), rows * cols)
+                self.assertEqual(len(self.view.board.stack.controls), rows * cols + len(self.view.board.tiles))
 
     def test_new_level_starts_a_new_game_and_keeps_the_best(self):
         self.game.score = self.game.high_score = 120
@@ -1315,29 +1281,29 @@ class DifficultyTests(ViewCase):
         self.tap()
         game = self.view.game
         self.assertEqual((game.score, game.high_score, game.game_over), (0, 120, False))
-        self.assertEqual(len(self.view.tiles), round(8 * 8 * START_FILL))
-        self.assertEqual(self.view.high_score_display.value, "120")
+        self.assertEqual(len(self.view.board.tiles), round(4 * 4 * START_FILL))  # MASTER
+        self.assertEqual(self.view.header.best_text.value, "120")
         self.assertFalse(self.view.game_over_button.visible)
-        self.assertEqual([b.bgcolor for b in self.view.level_blocks[2:]], [COLOR_LOCKED] * 3)
+        self.assertEqual([b.bgcolor for b in self.view.level_bar.blocks[2:]], [COLOR_LOCKED] * 3)
 
     def test_the_new_grid_fills_the_width(self):
         for _ in range(3):
             self.tap()
-            needed = self.view.board.width + 2 * (self.page.padding + self.layout.padding
-                                                  + self.view.swipe_area.content.content.controls[2].padding)
+            needed = self.view.board.stack.width + 2 * (self.page.padding + self.layout.padding
+                                                  + self.view.swipe_area.control.content.content.controls[2].padding)
             self.assertAlmostEqual(needed, self.page.width)
 
     def test_swipes_play_on_the_new_grid(self):
-        self.tap()  # MIDDLE 8x8
+        self.tap()  # MASTER 4x4
         game = self.view.game
         game.start_squares = 0
-        game.reset()  # an empty 8x8 board
-        game.place_square(3, 3, BLUE)
+        game.reset()  # an empty 4x4 board
+        game.place_square(1, 1, BLUE)
         self.view.refresh()
         with next_colors(GREEN):
             self.swipe("right")
-        self.assertEqual(game.grid[3][7], BLUE)
-        self.assertEqual(board_colors(self.view)[3][7], TILE_COLORS[BLUE])
+        self.assertEqual(game.grid[1][3], BLUE)
+        self.assertEqual(board_colors(self.view)[1][3], TILE_COLORS[BLUE])
 
     def test_level_change_during_an_animation_happens_right_after_it(self):
         place(self.game, (0, 0, BLUE))
@@ -1352,8 +1318,8 @@ class DifficultyTests(ViewCase):
 
         self.sleep.side_effect = tap_during_animation
         move(self.view, "down")  # real random: the new game needs many colors
-        self.assertEqual((self.view.game.rows, self.view.game.cols), (8, 8))
-        self.assertEqual(self.level_texts(), ["LEVEL", "MIDDLE"])
+        self.assertEqual((self.view.game.rows, self.view.game.cols), (4, 4))
+        self.assertEqual(self.level_texts(), ["LEVEL", "MASTER"])
 
 
 class GameOverButtonTests(ViewCase):
@@ -1376,8 +1342,8 @@ class GameOverButtonTests(ViewCase):
 
     def test_it_is_big_and_blue(self):
         button = self.view.game_over_button
-        board_box = self.view.swipe_area.content.content.controls[2]
-        self.assertEqual(button.width, self.view.board.width + 2 * board_box.padding)  # full width
+        board_box = self.view.swipe_area.control.content.content.controls[2]
+        self.assertEqual(button.width, self.view.board.stack.width + 2 * board_box.padding)  # full width
         self.assertGreaterEqual(button.height, 56)
         self.assertEqual(button.bgcolor, COLOR_RESTART)
         self.assertEqual(self.big_text().value, "RESTART")
@@ -1415,12 +1381,11 @@ def dialog_buttons(page):
 
 
 def confirm(page):
-    (ok,) = [b for label, b in dialog_buttons(page).items() if label != "CANCEL"]
-    ok.on_click(None)
+    page.dialog.actions[1].on_click(None)  # the second button: RESTART / CHANGE
 
 
 def cancel(page):
-    dialog_buttons(page)["CANCEL"].on_click(None)
+    page.dialog.actions[0].on_click(None)  # the first button: CANCEL
 
 
 class ConfirmTests(ViewCase):
@@ -1431,12 +1396,12 @@ class ConfirmTests(ViewCase):
             move(self.view, "left")
 
     def test_no_question_before_the_first_move(self):
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         self.assertIsNone(getattr(self.page, "dialog", None))
 
     def test_restart_during_a_game_asks_first(self):
         self.play_one_move()
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         dialog = self.page.dialog
         self.assertIsInstance(dialog, ft.AlertDialog)
         self.assertTrue(dialog.modal)
@@ -1446,7 +1411,7 @@ class ConfirmTests(ViewCase):
 
     def test_confirming_restarts(self):
         self.play_one_move()
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         confirm(self.page)
         self.assertIsNone(self.page.dialog)
         self.assertEqual(self.game.squares(), {})
@@ -1454,33 +1419,33 @@ class ConfirmTests(ViewCase):
     def test_cancelling_keeps_the_game(self):
         self.play_one_move()
         self.game.score = 42
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         cancel(self.page)
         self.assertIsNone(self.page.dialog)
         self.assertEqual((len(self.game.squares()), self.game.score), (1, 42))
 
     def test_level_change_during_a_game_asks_first(self):
         self.play_one_move()
-        self.view.level_button.on_click(None)
-        self.assertEqual(self.page.dialog.title.value, "Change to MIDDLE?")
+        self.view.header.level_button.on_click(None)
+        self.assertEqual(self.page.dialog.title.value, "Change to MASTER?")
         self.assertEqual(self.page.dialog.content.value, "You will lose the current game.")
-        self.assertEqual((self.view.game.rows, self.view.game.cols), (12, 12))
+        self.assertEqual((self.view.game.rows, self.view.game.cols), (10, 10))  # unchanged
         confirm(self.page)
-        self.assertEqual((self.view.game.rows, self.view.game.cols), (8, 8))
+        self.assertEqual((self.view.game.rows, self.view.game.cols), (4, 4))
 
     def test_cancelling_the_level_change_keeps_level_and_game(self):
         self.play_one_move()
         game = self.view.game
-        self.view.level_button.on_click(None)
+        self.view.header.level_button.on_click(None)
         cancel(self.page)
         self.assertIs(self.view.game, game)
-        self.assertEqual(self.view.level_value.value, "BEGINNER")
+        self.assertEqual(self.view.header.level_text.value, "MIDDLE")
 
     def test_no_question_once_the_game_is_over(self):
         self.play_one_move()
         self.game.game_over = True
         self.view.refresh()
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         self.assertIsNone(getattr(self.page, "dialog", None))
         self.assertEqual(self.game.squares(), {})
 
@@ -1489,7 +1454,7 @@ class ConfirmTests(ViewCase):
         self.view.refresh()
         self.swipe("left")  # the game refuses it
         self.game.game_over = False  # even if the game could go on again...
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         self.assertIsNone(getattr(self.page, "dialog", None))  # ...no move was played
 
     def test_big_game_over_button_never_asks(self):
@@ -1502,15 +1467,15 @@ class ConfirmTests(ViewCase):
 
     def test_a_new_game_does_not_ask_until_a_move_is_played(self):
         self.play_one_move()
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         confirm(self.page)
-        self.view.level_button.on_click(None)  # fresh game: no question
+        self.view.header.level_button.on_click(None)  # fresh game: no question
         self.assertIsNone(self.page.dialog)
-        self.assertEqual(self.view.level_value.value, "MIDDLE")
+        self.assertEqual(self.view.header.level_text.value, "MASTER")
 
     def test_dialog_buttons_are_blocks_like_the_rest(self):
         self.play_one_move()
-        self.view.restart_block.on_click(None)
+        self.view.header.restart_button.on_click(None)
         buttons = dialog_buttons(self.page)
         self.assertEqual(set(buttons), {"CANCEL", "RESTART"})
         self.assertEqual(buttons["RESTART"].bgcolor, COLOR_RESTART)
@@ -1523,6 +1488,97 @@ class ConfirmTests(ViewCase):
 
     def test_level_dialog_button_uses_the_new_level_color(self):
         self.play_one_move()
-        self.view.level_button.on_click(None)
-        self.assertEqual(dialog_buttons(self.page)["CHANGE"].bgcolor, DIFFICULTIES[1][3])
+        self.view.header.level_button.on_click(None)
+        self.assertEqual(dialog_buttons(self.page)["CHANGE"].bgcolor, DIFFICULTIES[2][3])
+
+
+class LanguageTests(ViewCase):
+    """Every text on screen follows the chosen language."""
+
+    def portuguese(self):
+        self.view.set_language("pt")
+
+    def header_labels(self):
+        return [block.content.controls[0].value for block in self.view.header.blocks]
+
+    def test_english_by_default(self):
+        self.assertEqual(self.header_labels(), ["SCORE", "BEST", "LEVEL", "RESTART"])
+        self.assertEqual(self.view.header.level_text.value, "MIDDLE")
+        self.assertEqual(self.view.status_display.value, "Line up 3 or more squares of the same color.")
+        self.assertEqual(self.view.game_over_button.content.value, "RESTART")
+
+    def test_header_and_message_in_portuguese(self):
+        self.portuguese()
+        self.assertEqual(self.header_labels(), ["PONTOS", "RECORDE", "NÍVEL", "REINICIAR"])
+        self.assertEqual(self.view.header.level_text.value, "MÉDIO")
+        self.assertEqual(self.view.status_display.value, "Alinhe 3 ou mais quadrados da mesma cor.")
+        self.assertEqual(self.view.game_over_button.content.value, "REINICIAR")
+        self.assertTrue(self.page.updated)
+
+    def test_tooltips_in_portuguese(self):
+        self.portuguese()
+        self.assertEqual(self.view.header.restart_button.tooltip, "Reiniciar")
+        self.assertEqual(self.view.header.level_button.tooltip, "Mudar de nível (começa um novo jogo)")
+        self.assertEqual(self.view.game_over_button.tooltip, "Reiniciar")
+        tips = [b.tooltip for b in self.view.level_bar.blocks]
+        self.assertEqual(tips, ["Cor inicial", "Cor inicial", "Desbloqueia com 50 pontos",
+                                "Desbloqueia com 150 pontos", "Desbloqueia com 350 pontos"])
+
+    def test_game_over_in_portuguese(self):
+        self.portuguese()
+        self.game.game_over = True
+        self.view.refresh()
+        self.assertEqual(self.view.status_display.value, "FIM DE JOGO")
+
+    def test_new_color_message_in_portuguese(self):
+        self.portuguese()
+        bottom = self.game.rows - 1
+        place(self.game, (0, bottom, BLUE), (1, bottom, BLUE), (7, bottom, BLUE))
+        self.game.score = 48
+        with next_colors(GREEN):
+            move(self.view, "left")
+        self.assertEqual(self.view.status_display.value, "Nova cor desbloqueada!")
+        run_background_tasks(self.page)
+        self.assertEqual(self.view.status_display.value, "Alinhe 3 ou mais quadrados da mesma cor.")
+
+    def test_confirmations_in_portuguese(self):
+        self.portuguese()
+        with next_colors(GREEN):
+            move(self.view, "left")
+        self.view.header.restart_button.on_click(None)
+        dialog = self.page.dialog
+        self.assertEqual((dialog.title.value, dialog.content.value),
+                         ("Reiniciar o jogo?", "Você vai perder o jogo atual."))
+        self.assertEqual([b.content.value for b in dialog.actions], ["CANCELAR", "REINICIAR"])
+        cancel(self.page)
+        self.view.header.level_button.on_click(None)
+        self.assertEqual(self.page.dialog.title.value, "Mudar para MESTRE?")
+        self.assertEqual([b.content.value for b in self.page.dialog.actions], ["CANCELAR", "MUDAR"])
+
+    def test_level_names_follow_the_language(self):
+        self.portuguese()
+        names = []
+        for _ in range(3):
+            self.view.header.level_button.on_click(None)
+            names.append(self.view.header.level_text.value)
+        self.assertEqual(names, ["MESTRE", "INICIANTE", "MÉDIO"])
+
+    def test_switching_back_to_english(self):
+        self.portuguese()
+        self.view.set_language("en")
+        self.assertEqual(self.header_labels(), ["SCORE", "BEST", "LEVEL", "RESTART"])
+
+    def test_flutter_is_told_the_language_too(self):
+        config = self.page.locale_configuration
+        self.assertEqual([l.language_code for l in config.supported_locales], ["en", "pt"])
+        self.assertEqual(config.current_locale.language_code, "en")
+        self.portuguese()
+        self.assertEqual(self.page.locale_configuration.current_locale.language_code, "pt")
+
+    def test_changing_language_keeps_the_game(self):
+        place(self.game, (0, 0, BLUE))
+        self.game.score = 42
+        self.portuguese()
+        self.assertEqual((len(self.game.squares()), self.game.score), (1, 42))
+        self.assertEqual(self.view.header.score_text.value, "42")
 
