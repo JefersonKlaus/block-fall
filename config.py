@@ -1,25 +1,66 @@
 """Application and game configuration."""
 
-GRID_ROWS = 8
-GRID_COLS = 8
-CELL_SIZE = 20
+# Levels (difficulty): name, grid rows, grid columns, button color.
+DIFFICULTIES = (
+    ("BEGINNER", 12, 12, "#93DDAA"),  # green
+    ("MIDDLE", 8, 8, "#F9DF7A"),  # yellow
+    ("MASTER", 6, 6, "#F28B8B"),  # red
+)
+DEFAULT_DIFFICULTY = 0
+GRID_ROWS, GRID_COLS = DIFFICULTIES[DEFAULT_DIFFICULTY][1:3]
+# Portrait window (desktop). Mobile devices are locked to portrait in ui.py.
+WINDOW_WIDTH = 390
+WINDOW_HEIGHT = 840
+# 2048-style squares: rounded, no border, small gaps. The grid always takes
+# the full width of the screen, whatever GRID_ROWS and GRID_COLS are, so the
+# board squares are sized at run time. CELL_SIZE is the size of the level
+# blocks above the grid.
+CELL_SIZE = 30
+CELL_SPACING = 4
+# Header blocks (score, best, restart): all the same size.
+HEADER_BLOCK_WIDTH = 56
+HEADER_BLOCK_HEIGHT = 44
+# Play by touch: a finger must move at least this far (px) to count as a swipe.
+SWIPE_MIN_DISTANCE = 24
+# Screen width to assume until the real one is known (a small phone).
+FALLBACK_PAGE_WIDTH = 320
+TILE_RADIUS = 4
 
-COLOR_BG = "#18181b"
-COLOR_BOARD_BG = "#27272a"
-COLOR_EMPTY = "#3f3f46"
-COLOR_TEXT_LIGHT = "#ffffff"
-COLOR_TEXT_DARK = "#27272a"
-COLOR_STATUS_ERROR = "#f87171"
-COLOR_ACCENT = "#d97706"
-COLOR_MUTED_TEXT = "#a1a1aa"
+# Pastel theme: light backgrounds, dark readable text.
+COLOR_BG = "#FFF8F1"
+COLOR_BOARD_BG = "#E4D9F0"
+COLOR_EMPTY = "#F7F3FB"
+COLOR_TEXT = "#4B4453"
+COLOR_MUTED_TEXT = "#857B93"
+COLOR_STATUS = "#B4536A"
+# Restart buttons (the header block and the big one at game over): blue.
+COLOR_RESTART = "#7FB3F5"
+# Second color of the logo's wordmark ("Block" + "Fall").
+COLOR_LOGO_ACCENT = "#7A56BF"
+# Matched squares flash gold before they disappear.
+COLOR_GOLD = "#FFD700"
+GOLD_FLASH_SECONDS = 0.3
+# Like 2048: squares slide to their new place, new squares pop in.
+ANIMATION_SECONDS = 0.15
+# New squares are first shown tiny, then grown after this short delay.
+POP_START_SECONDS = 0.03
 
+# Square colors, one per level (pastel, but easy to tell apart).
+BLUE, GREEN, RED, PEACH, PURPLE = 1, 2, 3, 4, 5
 TILE_COLORS = {
     0: COLOR_EMPTY,
-    2: "#38bdf8",
-    4: "#a78bfa",
-    8: "#f472b6",
-    16: "#fb7185",
-    32: "#fb923c",
-    64: "#facc15",
-    128: "#4ade80",
+    BLUE: "#8EC5FF",
+    GREEN: "#9EE5B8",
+    RED: "#FF9AA2",
+    PEACH: "#FFC89A",
+    PURPLE: "#C9A7F5",
 }
+# Score needed for each color: 2 to start, then +50, +100, +200 points.
+UNLOCK_SCORES = (0, 0, 50, 150, 350)
+# A newly unlocked level block shows gold this long, then its color.
+UNLOCK_FLASH_SECONDS = 0.8
+# Level blocks of colors not unlocked yet: gray with a lock.
+COLOR_LOCKED = "#B8B3BF"
+COLOR_LOCK_ICON = "#5F5969"
+# Part of the grid already filled with squares when a game starts (10%).
+START_FILL = 0.10

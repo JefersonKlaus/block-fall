@@ -1,0 +1,15 @@
+[run]
+# Measure branches, not just lines: conditional expressions such as
+# `a if cond else b` and short-circuiting generators are otherwise hidden.
+branch = True
+# Measure every module in the project, including ones no test imports
+# (without this, main.py silently disappears from the report).
+source = .
+omit =
+    tests/*
+    .venv/*
+    venv/*
+
+[report]
+show_missing = True
+fail_under = 100

@@ -1,210 +1,254 @@
-"""Core Block Fall game rules, independent of the UI framework."""
+"""Core game rules, independent of the UI framework.
+
+Rules:
+- The board holds single colored squares. There are 5 colors, one per level:
+  a game starts with 2, and one more unlocks at 50, 150 and 350 points.
+- A new game starts with about 10% of the board (START_FILL) already filled
+  with squares (in the starting colors, never already forming a line).
+- Every move slides all squares as far as they go in one direction, like
+  2048, but squares never merge.
+- After every move one new square (random unlocked color) appears on the opposite side
+  of the board: push right and it appears on the left edge, at a random free
+  position along that edge (or on the nearest line inward if the edge is full).
+- MATCH_LENGTH or more squares of the same color in a horizontal or vertical
+  line disappear. A line scores 3 points for its first 3 squares and 2 points
+  for every extra square (3, 5, 7, ...). Crossing lines each score.
+- The game ends when the board is full.
+"""
 
 from dataclasses import dataclass
+from itertools import groupby
 import random
+from typing import Optional
 
-from config import GRID_COLS, GRID_ROWS
-
-
-TETROMINOES = (
-    ((0, 0), (1, 0), (2, 0), (3, 0)),  # I
-    ((0, 0), (1, 0), (0, 1), (1, 1)),  # O
-    ((1, 0), (0, 1), (1, 1), (2, 1)),  # T
-    ((1, 0), (2, 0), (0, 1), (1, 1)),  # S
-    ((0, 0), (1, 0), (1, 1), (2, 1)),  # Z
-    ((0, 0), (0, 1), (1, 1), (2, 1)),  # J
-    ((2, 0), (0, 1), (1, 1), (2, 1)),  # L
+from config import (
+    BLUE,
+    GREEN,
+    GRID_COLS,
+    GRID_ROWS,
+    PEACH,
+    PURPLE,
+    RED,
+    START_FILL,
+    UNLOCK_SCORES,
 )
-PIECE_COLORS = (2, 4, 8, 16, 32, 64, 128)
 
 
-@dataclass
-class Piece:
-    """A randomly selected tetromino and its board color."""
+SQUARE_COLORS = (BLUE, GREEN, RED, PEACH, PURPLE)
+MATCH_LENGTH = 3
+# Board movement as (column step, row step).
+DIRECTION_STEPS = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}
 
-    cells: list[tuple[int, int]]
-    color: int
+# square id -> (column, row, color)
+Squares = dict[int, tuple[int, int, int]]
 
-    def rotate(self) -> None:
-        """Rotate the tetromino clockwise and keep coordinates non-negative."""
-        rotated = [(-row, column) for column, row in self.cells]
-        min_column = min(column for column, _ in rotated)
-        min_row = min(row for _, row in rotated)
-        self.cells = [
-            (column - min_column, row - min_row) for column, row in rotated
-        ]
 
-    @property
-    def width(self) -> int:
-        return max(column for column, _ in self.cells) + 1
+def line_points(length: int) -> int:
+    """Points for a line: 1 per square for the first 3, then 2 per square."""
+    return MATCH_LENGTH + 2 * (length - MATCH_LENGTH)
 
-    @property
-    def height(self) -> int:
-        return max(row for _, row in self.cells) + 1
+
+@dataclass(frozen=True)
+class Frame:
+    """One step of a move, recorded so the UI can animate it.
+
+    kind is "slide" (squares moved), "match" (`gold` squares are about to
+    disappear) or "spawn" (a new square appeared). `squares` is a snapshot.
+    """
+
+    kind: str
+    squares: Squares
+    gold: frozenset[int] = frozenset()
 
 
 class BlockFallEngine:
-    """Manage the square board, tetrominoes, scoring, and game state."""
+    """Manage the board, the squares, scoring, and game state."""
 
-    def __init__(self, rows: int = GRID_ROWS, cols: int = GRID_COLS):
+    def __init__(
+        self, rows: int = GRID_ROWS, cols: int = GRID_COLS, start_squares: Optional[int] = None
+    ):
         self.rows = rows
         self.cols = cols
+        # By default about 10% of the board starts filled.
+        self.start_squares = (
+            round(rows * cols * START_FILL) if start_squares is None else start_squares
+        )
         self.grid: list[list[int]] = []
+        # Parallel to grid: a unique id per square that travels with it, so
+        # the UI can show each square sliding to its new place.
+        self.square_ids: list[list[int]] = []
+        self._next_square_id = 1
+        # What happened during the last play_move, step by step (for display).
+        self.frames: list[Frame] = []
         self.score = 0
         self.high_score = 0
         self.game_over = False
-        self.current_piece = self._generate_piece()
-        self.next_piece = self._generate_piece()
         self._clear_board()
+        self._add_starting_squares(self.start_squares)
 
     def reset(self) -> None:
         """Start a new game while preserving the high score."""
         self._clear_board()
+        self.frames = []
         self.score = 0
         self.game_over = False
-        self.current_piece = self._generate_piece()
-        self.next_piece = self._generate_piece()
+        self._add_starting_squares(self.start_squares)
 
-    def rotate_piece(self) -> None:
-        """Rotate the current tetromino before it is placed."""
-        self.current_piece.rotate()
+    def unlocked_colors(self) -> tuple[int, ...]:
+        """The colors new squares can have, given the current score."""
+        return tuple(
+            color for color, needed in zip(SQUARE_COLORS, UNLOCK_SCORES) if self.score >= needed
+        )
 
-    def drop_piece(self) -> bool:
-        """Drop the current tetromino into a randomly selected valid column."""
-        if self.game_over:
+    def play_move(self, direction: str) -> bool:
+        """Play one turn: slide every square, then add one new square.
+
+        Returns False if the move is not allowed (invalid direction or game
+        over). The game is over when the board is full after the turn.
+        """
+        self.frames = []
+        if self.game_over or direction not in DIRECTION_STEPS:
             return False
-
-        valid_columns = [
-            column
-            for column in range(self.cols - self.current_piece.width + 1)
-            if self._can_place(self.current_piece, column, 0)
-        ]
-        if not valid_columns:
-            self.game_over = True
-            return False
-
-        target_col = random.choice(valid_columns)
-        row = 0
-        while self._can_place(self.current_piece, target_col, row + 1):
-            row += 1
-
-        if not self._can_place(self.current_piece, target_col, row):
-            self.game_over = True
-            return False
-
-        for column, piece_row in self.current_piece.cells:
-            self.grid[row + piece_row][target_col + column] = self.current_piece.color
-
-        self.process_complete_lines()
-        self._advance_piece()
-        self._update_game_over()
+        self.move_board(direction)
+        self.spawn_square(direction)
+        self.game_over = all(all(row) for row in self.grid)
         return True
 
     def move_board(self, direction: str) -> bool:
-        """Move and merge board values in the requested direction."""
-        if self.game_over or direction not in {"left", "right", "up", "down"}:
-            return False
+        """Slide every square as far as possible; then clear lines.
 
-        moved = (
-            self._merge_horizontal(direction)
-            if direction in {"left", "right"}
-            else self._merge_vertical(direction)
-        )
-        self.apply_gravity()
-        self.process_complete_lines()
-        self._update_high_score()
+        Returns True if any square moved.
+        """
+        if self.game_over or direction not in DIRECTION_STEPS:
+            return False
+        moved = False
+        for line in self._lines_from(direction):
+            squares = [self._take(column, row) for column, row in line]
+            packed = [square for square in squares if square[0]]
+            packed += [(0, 0)] * (len(line) - len(packed))
+            moved = moved or packed != squares
+            for (column, row), (color, square_id) in zip(line, packed):
+                self.grid[row][column] = color
+                self.square_ids[row][column] = square_id
+        if moved:
+            self.frames.append(Frame("slide", self.squares()))
+        self.clear_matches()
         return moved
 
-    def apply_gravity(self) -> None:
-        """Move non-empty cells toward the bottom of each column."""
-        for col in range(self.cols):
-            values = [self.grid[row][col] for row in range(self.rows) if self.grid[row][col]]
-            new_column = [0] * (self.rows - len(values)) + values
-            for row in range(self.rows):
-                self.grid[row][col] = new_column[row]
+    def spawn_square(self, direction: str) -> bool:
+        """Add one random square on the side opposite to `direction`.
 
-    def process_complete_lines(self) -> None:
-        """Remove full rows and award points for cleared tetromino lines."""
-        remaining_rows = []
-        cleared = 0
-        for row in self.grid:
-            if all(row):
-                cleared += 1
-            else:
-                remaining_rows.append(row)
+        Returns False if the board is full.
+        """
+        opposite = {"left": "right", "right": "left", "up": "down", "down": "up"}
+        for line in self._edges_from(opposite[direction]):
+            free = [(column, row) for column, row in line if not self.grid[row][column]]
+            if free:
+                column, row = random.choice(free)
+                self.place_square(column, row, random.choice(self.unlocked_colors()))
+                self.frames.append(Frame("spawn", self.squares()))
+                self.clear_matches()
+                return True
+        return False
 
-        self.grid = [[0] * self.cols for _ in range(cleared)] + remaining_rows
-        self.score += cleared * self.cols * 10
-        self._update_high_score()
+    def place_square(self, column: int, row: int, color: int) -> bool:
+        """Put one square on a free cell."""
+        if not (0 <= column < self.cols and 0 <= row < self.rows) or self.grid[row][column]:
+            return False
+        self.grid[row][column] = color
+        self.square_ids[row][column] = self._next_square_id
+        self._next_square_id += 1
+        return True
+
+    def squares(self) -> Squares:
+        """Every square on the board: id -> (column, row, color)."""
+        return {
+            square_id: (column, row, self.grid[row][column])
+            for row, ids in enumerate(self.square_ids)
+            for column, square_id in enumerate(ids)
+            if square_id
+        }
+
+    def clear_matches(self) -> int:
+        """Remove every line of MATCH_LENGTH or more same-colored squares.
+
+        Each line scores line_points(length); a square shared by a horizontal
+        and a vertical line counts in both but is removed once. Returns the
+        number of squares removed.
+        """
+        matched: set[tuple[int, int]] = set()
+        points = 0
+        for line in self._lines_from("left") + self._lines_from("up"):
+            for color, run in groupby(line, key=lambda cell: self.grid[cell[1]][cell[0]]):
+                run = list(run)
+                if color and len(run) >= MATCH_LENGTH:
+                    matched.update(run)
+                    points += line_points(len(run))
+        if matched:
+            gold = frozenset(self.square_ids[row][column] for column, row in matched)
+            self.frames.append(Frame("match", self.squares(), gold))
+        for column, row in matched:
+            self.grid[row][column] = 0
+            self.square_ids[row][column] = 0
+        self.score += points
+        self.high_score = max(self.high_score, self.score)
+        return len(matched)
 
     def _clear_board(self) -> None:
-        self.grid = [[0 for _ in range(self.cols)] for _ in range(self.rows)]
+        self.grid = [[0] * self.cols for _ in range(self.rows)]
+        self.square_ids = [[0] * self.cols for _ in range(self.rows)]
 
-    @staticmethod
-    def _generate_piece() -> Piece:
-        shape = random.choice(TETROMINOES)
-        return Piece(list(shape), random.choice(PIECE_COLORS))
-
-    def _can_place(self, piece: Piece, column: int, row: int) -> bool:
-        return all(
-            0 <= column + piece_column < self.cols
-            and 0 <= row + piece_row < self.rows
-            and self.grid[row + piece_row][column + piece_column] == 0
-            for piece_column, piece_row in piece.cells
-        )
-
-    def _advance_piece(self) -> None:
-        self.current_piece = self.next_piece
-        self.next_piece = self._generate_piece()
-
-    def _update_game_over(self) -> None:
-        self.game_over = not any(
-            self._can_place(self.current_piece, column, 0)
+    def _add_starting_squares(self, count: int) -> None:
+        """Put up to `count` squares on random free cells, without any line."""
+        cells = [
+            (column, row)
+            for row in range(self.rows)
             for column in range(self.cols)
-        )
+            if not self.grid[row][column]
+        ]
+        random.shuffle(cells)
+        added = 0
+        for column, row in cells:
+            if added == count:
+                break
+            allowed = [
+                color for color in self.unlocked_colors()
+                if not self._would_make_line(column, row, color)
+            ]
+            if allowed:
+                self.place_square(column, row, random.choice(allowed))
+                added += 1
 
-    def _update_high_score(self) -> None:
-        self.high_score = max(self.high_score, self.score)
+    def _would_make_line(self, column: int, row: int, color: int) -> bool:
+        """Would a `color` square at (column, row) complete a line?"""
+        for step_col, step_row in ((1, 0), (0, 1)):
+            length = 1
+            for sign in (1, -1):
+                c, r = column + sign * step_col, row + sign * step_row
+                while 0 <= c < self.cols and 0 <= r < self.rows and self.grid[r][c] == color:
+                    length += 1
+                    c, r = c + sign * step_col, r + sign * step_row
+            if length >= MATCH_LENGTH:
+                return True
+        return False
 
-    def _merge_horizontal(self, direction: str) -> bool:
-        moved = False
-        for row_index, row in enumerate(self.grid):
-            values = [value for value in row if value]
-            if direction == "right":
-                values.reverse()
-            merged = self._merge_values(values)
-            if direction == "right":
-                merged.reverse()
-            if merged != row:
-                moved = True
-            self.grid[row_index] = merged
-        return moved
+    def _take(self, column: int, row: int) -> tuple[int, int]:
+        return self.grid[row][column], self.square_ids[row][column]
 
-    def _merge_vertical(self, direction: str) -> bool:
-        moved = False
-        for col in range(self.cols):
-            values = [self.grid[row][col] for row in range(self.rows) if self.grid[row][col]]
-            if direction == "down":
-                values.reverse()
-            merged = self._merge_values(values)
-            if direction == "down":
-                merged.reverse()
-            for row in range(self.rows):
-                if merged[row] != self.grid[row][col]:
-                    moved = True
-                self.grid[row][col] = merged[row]
-        return moved
+    def _lines_from(self, side: str) -> list[list[tuple[int, int]]]:
+        """Rows or columns, each listed starting from `side`.
 
-    def _merge_values(self, values: list[int]) -> list[int]:
-        merged = []
-        index = 0
-        while index < len(values):
-            if index + 1 < len(values) and values[index] == values[index + 1]:
-                merged_value = values[index] * 2
-                merged.append(merged_value)
-                self.score += merged_value
-                index += 2
-            else:
-                merged.append(values[index])
-                index += 1
-        return merged + [0] * (self.cols - len(merged))
+        "left": every row from left to right; "up": every column from top to
+        bottom; and so on. Squares sliding toward `side` pack at the front.
+        """
+        columns, rows = range(self.cols), range(self.rows)
+        if side in ("left", "right"):
+            ordered = columns if side == "left" else columns[::-1]
+            return [[(column, row) for column in ordered] for row in rows]
+        ordered = rows if side == "up" else rows[::-1]
+        return [[(column, row) for row in ordered] for column in columns]
+
+    def _edges_from(self, side: str) -> list[list[tuple[int, int]]]:
+        """Columns (or rows) starting at the `side` edge and going inward."""
+        lines = self._lines_from("up" if side in ("left", "right") else "left")
+        return lines if side in ("left", "up") else lines[::-1]

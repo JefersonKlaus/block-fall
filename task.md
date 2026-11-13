@@ -3,17 +3,21 @@
 
 
 ## Task
-The project is a mobile game
+This is a mobile game, this is a 'one finger game', so the player uses only one finger to play it. The ideia is very simple, appears one block in the grid and you need send ALL block to rigth, dow, up or left to close a line, if you do it, you make a point.
+The first goal, is fix a bug in the controls, for some reason the UP and DOWN action is not working well.
+The second goal is change one rule, at this version you press when you want to block (add new one) the new rule will be, you move the blocks, you get a new block.
+The last goal, is improve tests, the current version has only teste to the basic functions
+
 
 ## How to judge completion
-
-Run the app (desktop) create a library,  and import more books fot it, after need choose a differente library and import book for it. With the library OK, you need to edit the metadata of ONE book, and after many books together. And finally be able to convert the PDF to EPUB format.
-After all the manual test, run the pytest.
+Run the app, and play the entire game, you can run it in the computer or build it and play in your mobile device. So the game ends when you do not gave more space to insert a block in the grid.
+After play the game, run the pytest and see the results
 
 
 ## Notes
-This is a open source project that I started to automaticaly convert the PDF books to calibres format, you can find the code here https://github.com/JefersonKlaus/personal_library. Now this project is working as a personal library where I can import my books there and read theam.  But, after import my books I can not updatem them, so this task is to make it possible, and be possible convert the books to EPUB format.
-Now the app has 234 tests, so, probably I will add more.
+This is a mobile game, this is a 'one finger game', so the player uses only one finger to play it. The ideia is very simple, appears one block in the grid and you need send ALL block to rigth, dow, up or left to close a line, if you do it, you make a point.
+This is an open source project, where you can find in this URL https://github.com/JefersonKlaus/block-fall
+This version has only 47 tests and some bugs, in the controls and in the UI, the ideia of this task is solve the bugs and add more tests.
 
 
 ## How to test
