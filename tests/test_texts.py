@@ -1,9 +1,9 @@
 """The app's texts: English by default, Portuguese on Portuguese devices."""
 
 import dataclasses
-import unittest
 
 import flet as ft
+import pytest
 
 from texts import DEFAULT_LANGUAGE, ENGLISH, LANGUAGES, PORTUGUESE, language_for
 
@@ -17,76 +17,77 @@ def locales(*codes):
     return result
 
 
-class LanguageChoiceTests(unittest.TestCase):
+class TestLanguageChoice:
     def test_english_is_the_default(self):
-        self.assertEqual(DEFAULT_LANGUAGE, "en")
-        self.assertEqual(language_for([]), "en")
+        assert DEFAULT_LANGUAGE == "en"
+        assert language_for([]) == "en"
 
-    def test_a_portuguese_device_gets_portuguese(self):
-        for device in (locales("pt"), locales("pt-BR"), locales("pt-PT"), locales("pt-BR", "en-US")):
-            with self.subTest(device=device):
-                self.assertEqual(language_for(device), "pt")
+    @pytest.mark.parametrize("device", ["pt", "pt-BR", "pt-PT", "pt-BR,en-US"])
+    def test_a_portuguese_device_gets_portuguese(self, device):
+        assert language_for(locales(*device.split(","))) == "pt"
 
-    def test_any_other_device_gets_english(self):
-        for device in (locales("en-US"), locales("es-ES"), locales("fr"), locales("de", "pt-BR")):
-            with self.subTest(device=device):
-                self.assertEqual(language_for(device), "en")
+    @pytest.mark.parametrize("device", ["en-US", "es-ES", "fr", "de,pt-BR"])
+    def test_any_other_device_gets_english(self, device):
+        assert language_for(locales(*device.split(","))) == "en"
 
     def test_only_the_main_device_language_counts(self):
-        self.assertEqual(language_for(locales("en-US", "pt-BR")), "en")
+        assert language_for(locales("en-US", "pt-BR")) == "en"
 
     def test_language_codes_in_any_case(self):
-        self.assertEqual(language_for([ft.Locale("PT", "BR")]), "pt")
+        assert language_for([ft.Locale("PT", "BR")]) == "pt"
 
 
-class TranslationTests(unittest.TestCase):
+class TestTranslation:
     def test_two_languages(self):
-        self.assertEqual(LANGUAGES, {"en": ENGLISH, "pt": PORTUGUESE})
+        assert LANGUAGES == {"en": ENGLISH, "pt": PORTUGUESE}
 
-    def test_every_text_is_translated(self):
-        for field in dataclasses.fields(ENGLISH):
-            english, portuguese = getattr(ENGLISH, field.name), getattr(PORTUGUESE, field.name)
-            with self.subTest(text=field.name):
-                self.assertTrue(english and portuguese)
-                if field.name not in ("cancel",):
-                    self.assertNotEqual(english, portuguese)
+    @pytest.mark.parametrize("text", [field.name for field in dataclasses.fields(ENGLISH)])
+    def test_every_text_is_translated(self, text):
+        english, portuguese = getattr(ENGLISH, text), getattr(PORTUGUESE, text)
+        assert english and portuguese
+        if text not in ("cancel",):
+            assert english != portuguese
 
     def test_placeholders_are_kept(self):
         for texts in (ENGLISH, PORTUGUESE):
-            self.assertIn("{points}", texts.unlocks_at)
-            self.assertIn("{level}", texts.change_level_question)
+            assert "{points}" in texts.unlocks_at
+            assert "{points}" in texts.final_score
+            assert "{level}" in texts.change_level_question
 
     def test_portuguese_texts(self):
-        self.assertEqual(
-            (PORTUGUESE.score, PORTUGUESE.best, PORTUGUESE.level, PORTUGUESE.restart),
-            ("PONTOS", "RECORDE", "NÍVEL", "REINICIAR"),
+        assert (PORTUGUESE.score, PORTUGUESE.best, PORTUGUESE.level, PORTUGUESE.restart) == (
+            "PONTOS", "RECORDE", "NÍVEL", "REINICIAR",
         )
-        self.assertEqual(PORTUGUESE.level_names, ("INICIANTE", "MÉDIO", "MESTRE"))
-        self.assertEqual(PORTUGUESE.play, "Alinhe 3 ou mais quadrados da mesma cor.")
-        self.assertEqual(PORTUGUESE.game_over, "FIM DE JOGO")
-        self.assertEqual(PORTUGUESE.unlocked, "Nova cor desbloqueada!")
+        assert PORTUGUESE.level_names == ("INICIANTE", "MÉDIO", "MESTRE")
+        assert PORTUGUESE.play == "Alinhe 3 ou mais quadrados da mesma cor."
+        assert PORTUGUESE.game_over == "FIM DE JOGO"
+        assert PORTUGUESE.unlocked == "Nova cor desbloqueada!"
+        assert PORTUGUESE.final_score.format(points=12) == "Você fez 12 pontos!"
 
     def test_english_texts_are_the_ones_the_game_already_uses(self):
-        self.assertEqual(ENGLISH.level_names, ("BEGINNER", "MIDDLE", "MASTER"))
-        self.assertEqual(ENGLISH.play, "Line up 3 or more squares of the same color.")
-        self.assertEqual(ENGLISH.game_over, "GAME OVER")
+        assert ENGLISH.level_names == ("BEGINNER", "MIDDLE", "MASTER")
+        assert ENGLISH.play == "Line up 3 or more squares of the same color."
+        assert ENGLISH.game_over == "GAME OVER"
+        assert ENGLISH.final_score.format(points=12) == "You scored 12 points!"
 
     def test_header_words_fit_their_blocks(self):
-        # Measured in Roboto (Flutter's font) at the sizes the header uses.
+        # Measured in Roboto (Flutter's font) at the sizes the header uses, in
+        # the narrowest blocks (on the smallest screen).
         import os
 
         from PIL import ImageFont
 
-        from config import HEADER_BLOCK_WIDTH
+        from config import FALLBACK_PAGE_WIDTH, HEADER_LABEL_SIZE, HEADER_LEVEL_SIZE
+        from ui.header import block_width
         from tools.screen import FONT_DIR as files
 
         def width(text, size, weight):
             font = ImageFont.truetype(os.path.join(files, f"Roboto-{weight}.ttf"), size * 10)
             return font.getlength(text) / 10
 
-        room = HEADER_BLOCK_WIDTH - 6
+        room = block_width(FALLBACK_PAGE_WIDTH) - 6
         for texts in LANGUAGES.values():
             for label in (texts.score, texts.best, texts.level, texts.restart):
-                self.assertLessEqual(width(label, 10, "Regular"), room, label)
+                assert width(label, HEADER_LABEL_SIZE, "Regular") <= room, label
             for name in texts.level_names:
-                self.assertLessEqual(width(name, 11, "Bold"), room, name)
+                assert width(name, HEADER_LEVEL_SIZE, "Bold") <= room, name

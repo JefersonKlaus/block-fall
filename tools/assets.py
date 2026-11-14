@@ -1,4 +1,4 @@
-"""The app icon and the Google Play / App Store images.
+"""The app icon, the launch screen, and the Google Play / App Store images.
 
 Screenshots are drawn from the real game and view (see tools/screen.py),
 with fixed random seeds so they come out the same every time.
@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Callable
 
 import flet as ft
-from PIL import Image, ImageDraw
+from PIL import Image
 
 import config
 from texts import LANGUAGES
-from tools.screen import Canvas, render
+from tools.screen import LINE_HEIGHT, Canvas, render
 from ui import BlockFallView
 from ui.widgets import LOGO_MARK
 
@@ -54,11 +54,15 @@ class StillPage:
 
     def __init__(self, width: float, height: float):
         self.width, self.height = width, height
+        # The store pictures show the app only: no phone system bars.
+        self.media = ft.PageMediaData(
+            padding=ft.Padding.zero(), view_padding=ft.Padding.zero(), view_insets=ft.Padding.zero(),
+            device_pixel_ratio=1, orientation=ft.Orientation.PORTRAIT,
+        )
         self.window = ft.Window()
         self.platform = None
         self.controls: list = []
         self.tasks: list = []
-        self.dialog = None
 
     def add(self, control) -> None:
         self.controls.append(control)
@@ -69,20 +73,15 @@ class StillPage:
     def run_task(self, handler, *args) -> None:
         self.tasks.append((handler, args))
 
-    def show_dialog(self, dialog) -> None:
-        self.dialog = dialog
-
-    def pop_dialog(self) -> None:
-        self.dialog = None
-
 
 @contextmanager
 def instant_animations(on_pause: Callable[[float], None] = lambda seconds: None):
     """Animations take no time; `on_pause` sees each pause (e.g. the gold one)."""
     real_sleep = asyncio.sleep
 
-    async def pause(seconds, *args, **kwargs):
+    async def pause(seconds, result=None):  # asyncio.sleep's signature
         on_pause(seconds)
+        return result
 
     asyncio.sleep = pause
     try:
@@ -173,7 +172,7 @@ def screenshot(target: Target, seed: int, scene, language: str = "en") -> Image.
         image: list[Image.Image] = []
 
         def shoot() -> Image.Image:
-            image.append(render(view, width, height, target.scale, view.page.dialog))
+            image.append(render(view, width, height, target.scale))
             return image[-1]
 
         scene(view, shoot)
@@ -182,32 +181,56 @@ def screenshot(target: Target, seed: int, scene, language: str = "en") -> Image.
 
 # --- artwork ----------------------------------------------------------------
 
+# Share of the icon's width the mark takes on a phone: `flet build` scales
+# the app icon to this on iOS (and to the matching safe circle on Android).
+# The store icons use the same, so they look like the installed app.
+ICON_MARK = 0.6
+# Gap between the mark's squares, as a share of the mark's width.
+MARK_GAP = 0.04
+
+
 def draw_mark(canvas: Canvas, x: float, y: float, size: float) -> None:
-    """The logo's mark: a board with a gold line of 3 in the middle row."""
-    canvas.box(x, y, size, size, 0.2 * size, config.COLOR_BOARD_BG)
-    pad, gap = 0.12 * size, 0.05 * size
-    cell = (size - 2 * pad - 2 * gap) / 3
+    """The logo's mark: 3 x 3 rounded squares (no frame), the middle row a gold line of 3."""
+    gap = MARK_GAP * size
+    cell = (size - 2 * gap) / 3
     for r, row in enumerate(LOGO_MARK):
         for c, color in enumerate(row):
-            canvas.box(x + pad + c * (cell + gap), y + pad + r * (cell + gap), cell, cell, 0.18 * cell, color)
+            canvas.box(x + c * (cell + gap), y + r * (cell + gap), cell, cell, 0.18 * cell, color)
 
 
 def app_icon(size: int = 1024) -> Image.Image:
-    """Transparent around the mark: `flet build` adds each platform's
+    """The mark alone, on transparency: `flet build` adds each platform's
     background (tool.flet.icon_background) and margins."""
-    canvas = Canvas(size, size, 1, config.COLOR_BG)
+    canvas = Canvas(size, size, 1, None)
     draw_mark(canvas, 0, 0, size)
-    icon = canvas.image.convert("RGBA")
-    mask = Image.new("L", icon.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, size - 1, size - 1], radius=0.2 * size, fill=255)
-    icon.putalpha(mask)
-    return icon
+    return canvas.image
+
+
+def splash_image(size: int = 1024) -> Image.Image:
+    """The launch screen: the logo's mark above "Block Fall", on transparency.
+
+    `flet build` centers it on the splash color (tool.flet.splash in
+    pyproject.toml) at a quarter of its pixel size (1024 px -> 256 dp). It all
+    stays inside the middle circle (2/3 of the width) that Android 12+ shows,
+    so no platform crops or shrinks it.
+    """
+    canvas = Canvas(size, size, 1, None)
+    mark, text, gap = 0.32 * size, 0.1 * size, 0.05 * size
+    space = canvas.text_width(" ", text, "Black")
+    block, fall = canvas.text_width("Block", text, "Black"), canvas.text_width("Fall", text, "Black")
+    top = (size - (mark + gap + LINE_HEIGHT * text)) / 2
+    draw_mark(canvas, (size - mark) / 2, top, mark)
+    left = (size - (block + space + fall)) / 2
+    canvas.text("Block", left, top + mark + gap, text, "Black", config.COLOR_TEXT)
+    canvas.text("Fall", left + block + space, top + mark + gap, text, "Black", config.COLOR_LOGO_ACCENT)
+    return canvas.image
 
 
 def store_icon(size: int) -> Image.Image:
     """Square and opaque, as both stores want (they round the corners)."""
     canvas = Canvas(size, size, 1, config.COLOR_BG)
-    draw_mark(canvas, 0.12 * size, 0.12 * size, 0.76 * size)
+    margin = (1 - ICON_MARK) / 2 * size
+    draw_mark(canvas, margin, margin, ICON_MARK * size)
     return canvas.image
 
 
@@ -228,6 +251,7 @@ def build(root: Path = ROOT, targets=TARGETS, scenes=SCENES) -> list[Path]:
     """Write the icon and every store image under `root`; return the files."""
     files = {
         root / "src" / "assets" / "icon.png": app_icon(),
+        root / "src" / "assets" / "splash.png": splash_image(),
         root / SHOTS / "google-play" / "icon-512.png": store_icon(512),
         root / SHOTS / "app-store" / "icon-1024.png": store_icon(1024),
     }

@@ -1,10 +1,45 @@
 [project]
 name = "block-fall"
-version = "1.0.0"
+version = "2.0.0"
 description = "Slide colored squares and line up 3 or more of the same color."
 readme = "README.md"
 requires-python = ">=3.10"
+# What the phone app needs. `flet build` packs exactly this list into the
+# Android / iOS app, so development tools never go here.
 dependencies = ["flet==1.0.5"]
+
+[project.optional-dependencies]
+# Everything for development: pip install -e ".[dev]"
+dev = [
+    # The `flet` command (flet run, flet build) and the desktop runner.
+    "flet[cli,desktop]==1.0.5",
+    # The tests and their coverage.
+    "pytest==9.2.0",
+    "coverage==7.16.2",
+    # Store images and the app icon (python -m tools.store_assets).
+    "pillow==12.3.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The app is the top-level modules in src/ (the usual Flet layout, not one
+# package). `pip install -e .` only adds src/ to the environment's sys.path,
+# so `import game` works anywhere and edits apply at once; nothing is
+# written into src/ (flet build packs that folder into the phone app).
+only-include = ["src"]
+exclude = ["src/assets"]
+sources = ["src"]
+dev-mode-dirs = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The tests import the app (src/) and the dev tools (tools/, tests/), even
+# without the editable install.
+pythonpath = ["src", "."]
+addopts = ["--strict-markers", "--strict-config"]
 
 [tool.flet]
 # Name shown on the phone and in the stores.
@@ -15,6 +50,13 @@ icon_background = "#FFF8F1"
 # Android package name / iOS bundle id, e.g. com.yourcompany.blockfall).
 # org = "com.yourcompany"
 # bundle_id = "com.yourcompany.blockfall"
+
+[tool.flet.splash]
+# The launch screen: src/assets/splash.png (made by python -m tools.store_assets)
+# centered on the app's cream background. The same in dark mode: the app has
+# no dark theme, so a dark launch screen would flash before it.
+color = "#FFF8F1"
+dark_color = "#FFF8F1"
 
 [tool.flet.app]
 # The usual Flet layout: the app and its assets/ folder live in src/.

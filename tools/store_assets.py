@@ -2,7 +2,7 @@
 
     python -m tools.store_assets
 
-Writes src/assets/icon.png (used by `flet build`) and everything under
+Writes src/assets/icon.png and src/assets/splash.png (used by `flet build`) and everything under
 doc/screenshot/. Needs the dev requirements (Pillow); the Roboto fonts are in tools/fonts.
 """
 

@@ -9,7 +9,6 @@ import flet as ft
 
 from config import (
     BLUE,
-    CELL_SIZE,
     COLOR_BG,
     COLOR_BOARD_BG,
     COLOR_GOLD,
@@ -18,7 +17,7 @@ from config import (
     COLOR_TEXT,
     GREEN,
     HEADER_BLOCK_HEIGHT,
-    HEADER_BLOCK_WIDTH,
+    HEADER_LABEL_SIZE,
     PEACH,
     PURPLE,
     RED,
@@ -34,30 +33,24 @@ LOGO_MARK = (
 )
 
 
-def create_tile(
-    value: int, width: float = CELL_SIZE, height: float = CELL_SIZE, gold: bool = False
-) -> ft.Container:
-    """One square: rounded, no border (like 2048). `gold`: about to disappear."""
-    return ft.Container(
-        width=width,
-        height=height,
-        bgcolor=COLOR_GOLD if gold else TILE_COLORS.get(value, COLOR_BOARD_BG),
-        border_radius=TILE_RADIUS,
-    )
+def create_tile(value: int) -> ft.Container:
+    """One square of the board (0: an empty slot): rounded, no border, like
+    2048. The board gives it its size and place."""
+    return ft.Container(bgcolor=TILE_COLORS[value], border_radius=TILE_RADIUS)
 
 
-def create_block(label: str, value: ft.Control) -> ft.Container:
+def create_block(label: str, value: ft.Control, width: float) -> ft.Container:
     """A header block: a small label above a value (score, best, level...)."""
     return ft.Container(
         content=ft.Column(
-            [ft.Text(label, size=10, color=COLOR_MUTED_TEXT), value],
+            [ft.Text(label, size=HEADER_LABEL_SIZE, color=COLOR_MUTED_TEXT), value],
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             alignment=ft.MainAxisAlignment.CENTER,
             spacing=0,
         ),
         bgcolor=COLOR_BOARD_BG,
         border_radius=6,
-        width=HEADER_BLOCK_WIDTH,
+        width=width,
         height=HEADER_BLOCK_HEIGHT,
         alignment=ft.Alignment.CENTER,
     )
@@ -87,9 +80,7 @@ def create_logo() -> ft.Row:
     return ft.Row([mark, name], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
 
-def create_dialog_button(
-    label: str, color: str, on_click: Callable[[Any], None]
-) -> ft.Container:
+def create_dialog_button(label: str, color: str, on_click: Callable[[Any], None]) -> ft.Container:
     """A dialog button drawn as a block, like the rest of the app."""
     return ft.Container(
         content=ft.Text(label, size=13, weight=ft.FontWeight.BOLD, color=COLOR_TEXT),

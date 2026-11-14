@@ -2,7 +2,7 @@
 
 Rules:
 - The board holds single colored squares. There are 5 colors, one per level:
-  a game starts with 2, and one more unlocks at 50, 150 and 350 points.
+  a game starts with 2, and one more unlocks every 50 points (50, 100, 150).
 - A new game starts with about 10% of the board (START_FILL) already filled
   with squares (in the starting colors, never already forming a line).
 - Every move slides all squares as far as they go in one direction, like
@@ -36,13 +36,11 @@ from config import (
 
 SQUARE_COLORS = (BLUE, GREEN, RED, PEACH, PURPLE)
 MATCH_LENGTH = 3
-# Board movement as (column step, row step).
-DIRECTION_STEPS = {"left": (-1, 0), "right": (1, 0), "up": (0, -1), "down": (0, 1)}
+# The move directions, each with the side where its new square appears.
+OPPOSITE = {"left": "right", "right": "left", "up": "down", "down": "up"}
 
 # square id -> (column, row, color)
 Squares = dict[int, tuple[int, int, int]]
-
-
 Cell = tuple[int, int]  # (column, row)
 
 
@@ -136,7 +134,7 @@ class BlockFallEngine:
         over). The game is over when the board is full after the turn.
         """
         self.frames = []
-        if self.game_over or direction not in DIRECTION_STEPS:
+        if self.game_over or direction not in OPPOSITE:
             return False
         self.move_board(direction)
         self.spawn_square(direction)
@@ -144,14 +142,11 @@ class BlockFallEngine:
         return True
 
     def move_board(self, direction: str) -> bool:
-        """Slide every square as far as possible; then clear lines.
-
-        Returns True if any square moved.
+        """Slide every square as far as possible toward `direction` (one of
+        OPPOSITE's keys); then clear lines. Returns True if any square moved.
         """
-        if self.game_over or direction not in DIRECTION_STEPS:
-            return False
         moved = False
-        for line in self._lines_from(direction):
+        for line in lines_from(self.rows, self.cols, direction):
             squares = [self._take(column, row) for column, row in line]
             packed = [square for square in squares if square[0]]
             packed += [(0, 0)] * (len(line) - len(packed))
@@ -169,8 +164,7 @@ class BlockFallEngine:
 
         Returns False if the board is full.
         """
-        opposite = {"left": "right", "right": "left", "up": "down", "down": "up"}
-        for line in self._edges_from(opposite[direction]):
+        for line in self._edges_from(OPPOSITE[direction]):
             free = [(column, row) for column, row in line if not self.grid[row][column]]
             if free:
                 column, row = random.choice(free)
@@ -258,10 +252,7 @@ class BlockFallEngine:
     def _take(self, column: int, row: int) -> tuple[int, int]:
         return self.grid[row][column], self.square_ids[row][column]
 
-    def _lines_from(self, side: str) -> list[list[Cell]]:
-        return lines_from(self.rows, self.cols, side)
-
     def _edges_from(self, side: str) -> list[list[Cell]]:
         """Columns (or rows) starting at the `side` edge and going inward."""
-        lines = self._lines_from("up" if side in ("left", "right") else "left")
+        lines = lines_from(self.rows, self.cols, "up" if side in ("left", "right") else "left")
         return lines if side in ("left", "up") else lines[::-1]

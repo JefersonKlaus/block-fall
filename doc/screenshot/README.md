@@ -9,9 +9,10 @@ the app:
 python -m tools.store_assets
 ```
 
-This also writes the app icon used by `flet build`: `src/assets/icon.png`.
+This also writes the app icon and the launch screen picture used by
+`flet build`: `src/assets/icon.png` and `src/assets/splash.png`.
 Run it again after changing the look of the app. It needs the development
-requirements (`python -m pip install -r requirements-dev.txt`).
+tools (`python -m pip install -e ".[dev]"`, see the main README).
 
 ## Google Play (`google-play/`)
 

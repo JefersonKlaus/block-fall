@@ -1,4 +1,0 @@
--r requirements.txt
-coverage==7.16.2
-# Store images and the app icon (python -m tools.store_assets)
-pillow==12.3.0

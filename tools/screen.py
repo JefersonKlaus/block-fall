@@ -6,6 +6,7 @@ places them (see src/ui/app.py). Text uses Roboto, Flutter's default font.
 """
 
 import os
+from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -20,9 +21,11 @@ LINE_HEIGHT = 1.17
 class Canvas:
     """Drawing in the app's logical pixels, scaled to the image's pixels."""
 
-    def __init__(self, width: float, height: float, scale: float, background: str):
+    def __init__(self, width: float, height: float, scale: float, background: Optional[str]):
+        """`background=None`: a transparent picture (e.g. the launch screen's)."""
         self.scale = scale
-        self.image = Image.new("RGB", (round(width * scale), round(height * scale)), background)
+        size = (round(width * scale), round(height * scale))
+        self.image = Image.new("RGBA", size) if background is None else Image.new("RGB", size, background)
         self.draw = ImageDraw.Draw(self.image)
 
     def font(self, size: float, weight: str) -> ImageFont.FreeTypeFont:
@@ -61,6 +64,14 @@ class Canvas:
             x = cx + side * r - (0.09 * size if side > 0 else 0)
             self.box(x, cy - 0.15 * size, 0.09 * size, 0.14 * size, 0, color)
 
+    def help(self, cx: float, cy: float, size: float, color: str, background: str) -> None:
+        """The Material "help_outline" icon: a ring with a question mark."""
+        r = 0.42 * size
+        self.box(cx - r, cy - r, 2 * r, 2 * r, r, color)
+        inner = r - 0.09 * size
+        self.box(cx - inner, cy - inner, 2 * inner, 2 * inner, inner, background)
+        self.centered("?", cx, cy - LINE_HEIGHT * 0.6 * size / 2, 0.6 * size, "Bold", color)
+
     def restart(self, cx: float, cy: float, size: float, color: str) -> None:
         """The Material "restart_alt" icon: a circular arrow."""
         s, r = self.scale, 0.32 * size
@@ -84,11 +95,11 @@ def wrap(canvas: Canvas, text: str, width: float, size: float, weight: str) -> l
     return lines + [line]
 
 
-def render(view, width: float, height: float, scale: float, dialog=None) -> Image.Image:
-    """The whole screen: header, level bar, message, grid, game-over button."""
+def render(view, width: float, height: float, scale: float) -> Image.Image:
+    """The whole screen: header, final score, level bar, message, grid, game-over button."""
     page = view.page
     canvas = Canvas(width, height, scale, config.COLOR_BG)
-    layout = page.controls[0]
+    layout = view.layout
     x0 = y0 = page.padding + layout.padding
     content_w = width - 2 * x0
     _draw_header(canvas, view, x0, y0, content_w)
@@ -102,17 +113,21 @@ def render(view, width: float, height: float, scale: float, dialog=None) -> Imag
     status_top = board_top - body.spacing - view.status_box.height
     levels_top = status_top - body.spacing - view.level_bar.blocks[0].height
 
+    banner = view.game_end.banner
+    if banner.visible:
+        _draw_final_score(canvas, banner, x0 + content_w / 2, levels_top - body.spacing - banner.height)
     _draw_level_bar(canvas, view, width, levels_top)
     _draw_status(canvas, view, x0, content_w, status_top)
     _draw_board(canvas, view, x0 + (content_w - view.board.outer_width) / 2, board_top)
-    if view.game_over_button.visible:
-        button = view.game_over_button
-        canvas.box(x0, slot_top, button.width, button.height, button.border_radius, button.bgcolor)
+    if view.help_button.control.visible:
+        _draw_help_button(canvas, view.help_button.control, x0 + content_w / 2, slot_top + slot.height / 2)
+    button = view.game_end.button
+    if button.visible:
+        left = x0 + (content_w - button.width) / 2  # centered, like the grid above it
+        canvas.box(left, slot_top, button.width, button.height, button.border_radius, button.bgcolor)
         label = button.content
-        canvas.centered(label.value, x0 + button.width / 2, slot_top + (button.height - LINE_HEIGHT * label.size) / 2,
+        canvas.centered(label.value, left + button.width / 2, slot_top + (button.height - LINE_HEIGHT * label.size) / 2,
                         label.size, "Bold", label.color)
-    if dialog is not None:
-        _draw_dialog(canvas, dialog, width, height)
     return canvas.image
 
 
@@ -177,6 +192,31 @@ def _draw_status(canvas: Canvas, view, x0: float, content_w: float, top: float) 
         canvas.centered(line, x0 + content_w / 2, first + i * line_h, text.size, "Bold", text.color)
 
 
+def _draw_help_button(canvas: Canvas, button, cx: float, cy: float) -> None:
+    """HOW TO PLAY: a pill with the Material "help_outline" icon and its label."""
+    icon, label = button.content.controls
+    pad = button.padding
+    content_w = icon.size + button.content.spacing + canvas.text_width(label.value, label.size, "Bold")
+    w, h = pad.left + content_w + pad.right, pad.top + icon.size + pad.bottom
+    left = cx - w / 2
+    canvas.box(left, cy - h / 2, w, h, button.border_radius, button.bgcolor)
+    canvas.help(left + pad.left + icon.size / 2, cy, icon.size, icon.color, button.bgcolor)
+    canvas.text(label.value, left + pad.left + icon.size + button.content.spacing,
+                cy - LINE_HEIGHT * label.size / 2, label.size, "Bold", label.color)
+
+
+def _draw_final_score(canvas: Canvas, box, cx: float, top: float) -> None:
+    """The points of this game and GAME OVER under them, centered in their box
+    (above its bottom padding: the gap before the level blocks)."""
+    column = box.content
+    lines = column.controls
+    height = sum(LINE_HEIGHT * text.size for text in lines) + (len(lines) - 1) * column.spacing
+    y = top + (box.height - box.padding.bottom - height) / 2
+    for text in lines:
+        canvas.centered(text.value, cx, y, text.size, "Bold", text.color)
+        y += LINE_HEIGHT * text.size + column.spacing
+
+
 def _draw_board(canvas: Canvas, view, left: float, top: float) -> None:
     board = view.board
     frame = board.frame
@@ -187,23 +227,3 @@ def _draw_board(canvas: Canvas, view, left: float, top: float) -> None:
         offset = (tile.width - size) / 2
         canvas.box(left + frame.padding + tile.left + offset, top + frame.padding + tile.top + offset,
                    size, size, tile.border_radius, tile.bgcolor)
-
-
-def _draw_dialog(canvas: Canvas, dialog, width: float, height: float) -> None:
-    """A Material 3 alert dialog over a dimmed screen."""
-    overlay = Image.new("RGBA", canvas.image.size, (0, 0, 0, 115))
-    canvas.image.paste(Image.alpha_composite(canvas.image.convert("RGBA"), overlay).convert("RGB"))
-    w = min(width - 80, 340)
-    h = 190
-    x, y = (width - w) / 2, (height - h) / 2
-    canvas.box(x, y, w, h, 28, dialog.bgcolor)
-    canvas.text(dialog.title.value, x + 24, y + 24, 22, "Bold", dialog.title.color)
-    canvas.text(dialog.content.value, x + 24, y + 70, 14, "Regular", dialog.content.color)
-    right = x + w - 24
-    for button in reversed(dialog.actions):
-        label = button.content
-        bw = canvas.text_width(label.value, label.size, "Bold") + 32
-        canvas.box(right - bw, y + h - 24 - 40, bw, 40, button.border_radius, button.bgcolor)
-        canvas.centered(label.value, right - bw / 2, y + h - 24 - 40 + (40 - LINE_HEIGHT * label.size) / 2,
-                        label.size, "Bold", label.color)
-        right -= bw + 8

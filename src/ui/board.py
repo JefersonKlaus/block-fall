@@ -23,14 +23,19 @@ SIDE_MARGIN = 2 * (PAGE_PADDING + LAYOUT_PADDING + BOARD_PADDING)
 SLIDE = ft.Animation(int(ANIMATION_SECONDS * 1000), ft.AnimationCurve.EASE_OUT)
 
 
-def fit_cell(page_width: Optional[float], cols: int) -> float:
+def fit_cell(page_width: Optional[float], cols: int, rows: int, max_height: Optional[float]) -> float:
     """Square size that makes `cols` columns fill the whole page width.
 
     `page_width` is the space the app really gets (Flet's page.width), not
-    the window size, which includes the window frame on desktop.
+    the window size, which includes the window frame on desktop. With a
+    `max_height`, the `rows` rows are never taller than that: on a short
+    screen the grid gets a little narrower than the page instead.
     """
     available = (page_width or FALLBACK_PAGE_WIDTH) - SIDE_MARGIN
-    return (available - (cols - 1) * CELL_SPACING) / cols
+    cell = (available - (cols - 1) * CELL_SPACING) / cols
+    if max_height is not None:
+        cell = min(cell, (max_height - (rows - 1) * CELL_SPACING) / rows)
+    return max(cell, 1.0)  # still drawable on an absurdly small window
 
 
 class BoardView:
@@ -39,7 +44,9 @@ class BoardView:
     A square keeps its tile for life, so moving it animates (like 2048).
     """
 
-    def __init__(self, rows: int, cols: int, page_width: Optional[float]):
+    def __init__(
+        self, rows: int, cols: int, page_width: Optional[float], max_height: Optional[float] = None
+    ):
         self.stack = ft.Stack()
         self.frame = ft.Container(
             content=self.stack,
@@ -49,6 +56,7 @@ class BoardView:
             alignment=ft.Alignment.CENTER,
         )
         self.page_width = page_width
+        self.max_height = max_height
         self.rebuild(rows, cols)
 
     @property
@@ -59,7 +67,7 @@ class BoardView:
     def rebuild(self, rows: int, cols: int) -> None:
         """An empty grid of a (new) size."""
         self.rows, self.cols = rows, cols
-        self.cell = fit_cell(self.page_width, cols)
+        self.cell = fit_cell(self.page_width, cols, rows, self.max_height)
         self.slots = [
             self._place(create_tile(0), column, row)
             for row in range(rows)
@@ -69,10 +77,11 @@ class BoardView:
         self.tiles: dict[int, ft.Container] = {}
         self._size()
 
-    def resize(self, page_width: Optional[float], squares: Squares) -> None:
-        """Fit the grid to a new page width (it always fills the width)."""
+    def resize(self, page_width: Optional[float], squares: Squares, max_height: Optional[float]) -> None:
+        """Fit the grid to a new page size."""
         self.page_width = page_width
-        self.cell = fit_cell(page_width, self.cols)
+        self.max_height = max_height
+        self.cell = fit_cell(page_width, self.cols, self.rows, max_height)
         self._size()
         for index, slot in enumerate(self.slots):
             self._place(slot, index % self.cols, index // self.cols)
@@ -98,7 +107,7 @@ class BoardView:
                 self.stack.controls.append(tile)
                 new_tiles.append(tile)
             self._place(tile, column, row)
-            tile.bgcolor = COLOR_GOLD if square_id in gold else TILE_COLORS.get(color, COLOR_BOARD_BG)
+            tile.bgcolor = COLOR_GOLD if square_id in gold else TILE_COLORS[color]
         return new_tiles
 
     @staticmethod

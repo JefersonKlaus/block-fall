@@ -1,67 +1,81 @@
 """Player input in order around animations."""
 
 import asyncio
-import unittest
+
+import pytest
 
 from ui.turns import TurnQueue
 
 
-class TurnQueueTests(unittest.TestCase):
-    def setUp(self):
-        self.queue = TurnQueue()
-        self.played = []
+@pytest.fixture
+def queue():
+    return TurnQueue()
 
-    def run_move(self, direction, during=None):
+
+@pytest.fixture
+def played():
+    """The moves, in the order they were really played."""
+    return []
+
+
+@pytest.fixture
+def run_move(queue, played):
+    """Submit a move; `during` runs (once) while the first move is playing."""
+    def run_move(direction, during=None):
         async def play(move):
-            self.played.append(move)
-            if during and len(self.played) == 1:
+            played.append(move)
+            if during and len(played) == 1:
                 await during()
 
-        asyncio.run(self.queue.submit(direction, play))
+        asyncio.run(queue.submit(direction, play))
 
-    def test_a_move_is_played_at_once_when_idle(self):
-        self.run_move("left")
-        self.assertEqual(self.played, ["left"])
-        self.assertFalse(self.queue.busy)
+    return run_move
 
-    def test_a_move_during_another_one_is_played_right_after(self):
+
+class TestTurnQueue:
+    def test_a_move_is_played_at_once_when_idle(self, queue, played, run_move):
+        run_move("left")
+        assert played == ["left"]
+        assert not queue.busy
+
+    def test_a_move_during_another_one_is_played_right_after(self, queue, played, run_move):
         async def swipe_again():
-            self.assertTrue(self.queue.busy)
-            await self.queue.submit("up", None)
-            self.assertTrue(self.queue.hurry)  # the running move should speed up
+            assert queue.busy
+            await queue.submit("up", None)
+            assert queue.hurry  # the running move should speed up
 
-        self.run_move("left", during=swipe_again)
-        self.assertEqual(self.played, ["left", "up"])
-        self.assertFalse(self.queue.hurry)
+        run_move("left", during=swipe_again)
+        assert played == ["left", "up"]
+        assert not queue.hurry
 
-    def test_the_latest_waiting_move_wins(self):
+    def test_the_latest_waiting_move_wins(self, queue, played, run_move):
         async def swipe_many():
             for direction in ("up", "right", "down"):
-                await self.queue.submit(direction, None)
+                await queue.submit(direction, None)
 
-        self.run_move("left", during=swipe_many)
-        self.assertEqual(self.played, ["left", "down"])
+        run_move("left", during=swipe_many)
+        assert played == ["left", "down"]
 
-    def test_an_action_runs_now_when_idle(self):
+    def test_an_action_runs_now_when_idle(self, queue):
         done = []
-        self.queue.when_idle(lambda: done.append(True))
-        self.assertEqual(done, [True])
+        queue.when_idle(lambda: done.append(True))
+        assert done == [True]
 
-    def test_an_action_during_a_move_runs_right_after_it(self):
+    def test_an_action_during_a_move_runs_right_after_it(self, queue, played, run_move):
         done = []
 
         async def ask():
-            self.queue.when_idle(lambda: done.append(list(self.played)))
-            self.assertEqual(done, [])
+            queue.when_idle(lambda: done.append(list(played)))
+            assert done == []
 
-        self.run_move("left", during=ask)
-        self.assertEqual(done, [["left"]])
-        self.assertIsNone(self.queue.pending)
+        run_move("left", during=ask)
+        assert done == [["left"]]
+        assert queue.pending is None
 
-    def test_busy_is_cleared_even_if_a_move_fails(self):
+    def test_busy_is_cleared_even_if_a_move_fails(self, queue):
         async def broken(_move):
             raise RuntimeError("boom")
 
-        with self.assertRaises(RuntimeError):
-            asyncio.run(self.queue.submit("left", broken))
-        self.assertFalse(self.queue.busy)
+        with pytest.raises(RuntimeError):
+            asyncio.run(queue.submit("left", broken))
+        assert not queue.busy

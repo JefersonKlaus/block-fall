@@ -3,7 +3,6 @@
 import importlib
 import runpy
 import sys
-import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +11,7 @@ import ui
 MAIN_PATH = Path(__file__).resolve().parent.parent / "src" / "main.py"
 
 
-class EntryPointTests(unittest.TestCase):
+class TestEntryPoint:
     def test_running_as_script_starts_flet_with_ui_main(self):
         with patch("flet.run") as run:
             runpy.run_path(str(MAIN_PATH), run_name="__main__")
@@ -23,4 +22,4 @@ class EntryPointTests(unittest.TestCase):
         with patch("flet.run") as run:
             module = importlib.import_module("main")
         run.assert_not_called()
-        self.assertIs(module.main, ui.main)
+        assert module.main is ui.main

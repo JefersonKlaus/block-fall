@@ -218,3 +218,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Android signing keys (see README: Build for Android)
+*.jks
+*.keystore
+task.md

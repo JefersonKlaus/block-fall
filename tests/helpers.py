@@ -33,6 +33,35 @@ def iter_controls(control):
         yield from iter_controls(child)
 
 
+class FakeStorage:
+    """Stand-in for ft.SharedPreferences: a dict. With `fail`, every call raises
+    (like the real one outside a Flet session)."""
+
+    def __init__(self, values=None, fail=False):
+        self.values = dict(values or {})
+        self.fail = fail
+
+    async def get(self, key):
+        if self.fail:
+            raise RuntimeError("no storage")
+        return self.values.get(key)
+
+    async def set(self, key, value):
+        if self.fail:
+            raise RuntimeError("no storage")
+        self.values[key] = value
+        return True
+
+
+def media_with(system_bars):
+    """Page media data whose system bars take (top, bottom) pixels."""
+    top, bottom = system_bars
+    return ft.PageMediaData(
+        padding=ft.Padding(0, top, 0, bottom), view_padding=ft.Padding(0, top, 0, bottom),
+        view_insets=ft.Padding.zero(), device_pixel_ratio=3, orientation=ft.Orientation.PORTRAIT,
+    )
+
+
 REAL_PAGE_ATTRIBUTES = {f.name for f in dataclasses.fields(ft.Page)} | set(dir(ft.Page))
 
 
@@ -45,10 +74,16 @@ class MockPage:
 
     _MOCK_ONLY = {"updated", "tasks", "orientations", "dialog", "device_languages"}
 
-    def __init__(self, platform=ft.PagePlatform.WINDOWS, width=400, device_languages=("en-US",)):
+    def __init__(
+        self, platform=ft.PagePlatform.WINDOWS, width=400, height=None, system_bars=(0, 0),
+        device_languages=("en-US",),
+    ):
         self.window = ft.Window()
         self.platform = platform
         self.width = width  # the space the app really gets (not the window size)
+        self.height = height  # None: not known (the grid then just fills the width)
+        # The phone's status bar (top) and home indicator (bottom), in pixels.
+        self.media = media_with(system_bars)
         self.tasks = []
         self.device_languages = device_languages
 

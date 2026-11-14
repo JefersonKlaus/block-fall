@@ -3,16 +3,16 @@
 import flet as ft
 
 from config import (
-    CELL_SIZE,
     COLOR_GOLD,
     COLOR_LOCK_ICON,
     COLOR_LOCKED,
+    LEVEL_BLOCK_SIZE,
     TILE_COLORS,
     TILE_RADIUS,
     UNLOCK_SCORES,
 )
 from game import SQUARE_COLORS
-from texts import ENGLISH, Texts
+from texts import Texts
 
 
 class LevelBar:
@@ -21,8 +21,8 @@ class LevelBar:
     def __init__(self):
         self.blocks = [
             ft.Container(
-                width=CELL_SIZE,
-                height=CELL_SIZE,
+                width=LEVEL_BLOCK_SIZE,
+                height=LEVEL_BLOCK_SIZE,
                 border_radius=TILE_RADIUS,
                 alignment=ft.Alignment.CENTER,
             )
@@ -30,12 +30,8 @@ class LevelBar:
         ]
         self.control = ft.Row(self.blocks, alignment=ft.MainAxisAlignment.CENTER, spacing=12)
 
-    def show(
-        self,
-        unlocked: tuple[int, ...],
-        unlocking: frozenset[int] = frozenset(),
-        texts: Texts = ENGLISH,
-    ) -> None:
+    def show(self, unlocked: tuple[int, ...], unlocking: frozenset[int], texts: Texts) -> None:
+        """`unlocking`: colors just unlocked, shown gold for a moment."""
         for block, needed in zip(self.blocks, UNLOCK_SCORES):
             block.tooltip = (
                 texts.starting_color if needed == 0 else texts.unlocks_at.format(points=needed)

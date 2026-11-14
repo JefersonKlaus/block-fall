@@ -1,8 +1,4 @@
-"""Developer tools (not part of the app): store artwork and screenshots."""
-
-import sys
-from pathlib import Path
-
-SRC = str(Path(__file__).resolve().parent.parent / "src")
-if SRC not in sys.path:
-    sys.path.insert(0, SRC)
+"""Developer tools (not part of the app): the app icon, the launch screen,
+and the store images. The app itself (src/) is importable once the project
+is installed with `pip install -e ".[dev]"`.
+"""

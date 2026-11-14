@@ -8,23 +8,32 @@ DIFFICULTIES = (
 )
 DEFAULT_DIFFICULTY = 1  # MIDDLE
 GRID_ROWS, GRID_COLS = DIFFICULTIES[DEFAULT_DIFFICULTY][1:3]
-# Portrait window (desktop). Mobile devices are locked to portrait in ui.py.
+# Portrait window (desktop). Mobile devices are locked to portrait in ui/app.py.
 WINDOW_WIDTH = 390
 WINDOW_HEIGHT = 840
-# 2048-style squares: rounded, no border, small gaps. The grid always takes
-# the full width of the screen, whatever GRID_ROWS and GRID_COLS are, so the
-# board squares are sized at run time. CELL_SIZE is the size of the level
-# blocks above the grid.
-CELL_SIZE = 30
+# 2048-style squares: rounded, no border, small gaps. The grid takes the full
+# width of the screen, whatever its size, so its squares are sized at run time
+# (ui/board.py). The 5 level blocks above the grid have a fixed size.
+LEVEL_BLOCK_SIZE = 30
 CELL_SPACING = 4
 # Space around the board (page, layout, and the board's own frame). The grid
 # fills whatever width is left.
 PAGE_PADDING = 10
 LAYOUT_PADDING = 5
 BOARD_PADDING = 8
-# Header blocks (score, best, restart): all the same size.
-HEADER_BLOCK_WIDTH = 64
-HEADER_BLOCK_HEIGHT = 50
+# Header blocks (score, best, level, restart): all the same size. They are
+# as wide as it takes to reach from the middle of the screen to its right
+# side (see ui/header.py), but never take the room the logo needs (the logo
+# is about 141 px wide, plus the gap after it).
+HEADER_BLOCK_HEIGHT = 56
+HEADER_BLOCK_SPACING = 6
+HEADER_LOGO_ROOM = 150
+# Text sizes in the header blocks: the small label, the number (score,
+# best), the level name, and the restart icon.
+HEADER_LABEL_SIZE = 11
+HEADER_VALUE_SIZE = 22
+HEADER_LEVEL_SIZE = 12
+HEADER_ICON_SIZE = 26
 # Play by touch: a finger must move at least this far (px) to count as a swipe.
 SWIPE_MIN_DISTANCE = 24
 # Screen width to assume until the real one is known (a small phone).
@@ -42,6 +51,8 @@ COLOR_STATUS = "#B4536A"
 COLOR_RESTART = "#7FB3F5"
 # Second color of the logo's wordmark ("Block" + "Fall").
 COLOR_LOGO_ACCENT = "#7A56BF"
+# The points of the game, at game over: colored, in the logo's accent.
+COLOR_FINAL_SCORE = COLOR_LOGO_ACCENT
 # Matched squares flash gold before they disappear.
 COLOR_GOLD = "#FFD700"
 GOLD_FLASH_SECONDS = 0.15
@@ -60,8 +71,8 @@ TILE_COLORS = {
     PEACH: "#FFC89A",
     PURPLE: "#C9A7F5",
 }
-# Score needed for each color: 2 to start, then +50, +100, +200 points.
-UNLOCK_SCORES = (0, 0, 50, 150, 350)
+# Score needed for each color: 2 to start, then one more every 50 points.
+UNLOCK_SCORES = (0, 0, 50, 100, 150)
 # A newly unlocked level block shows gold this long, then its color. As fast
 # as the gold in the grid, and it never holds up the game.
 UNLOCK_FLASH_SECONDS = GOLD_FLASH_SECONDS
